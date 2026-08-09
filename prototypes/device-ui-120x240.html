@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>螺丝刀 UI · 120×240</title>
+<style>
+:root{
+  --fg:#F2F2F4; --dim:#7C7C84; --hair:#1C1C1F;
+  --amber:#FFB020; --orange:#FF6A00; --volt:#FFE23D; --danger:#FF3B4E; --ok:#4BD46A;
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue","PingFang SC",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:radial-gradient(120% 90% at 50% 0%,#15161A,#000 70%);
+  color:var(--fg);font-family:var(--font);display:flex;flex-wrap:wrap;gap:46px;
+  align-items:flex-start;justify-content:center;padding:34px 20px 70px}
+.col{display:flex;flex-direction:column;align-items:center;gap:14px}
+.cap{font-size:10px;letter-spacing:.16em;color:#5A5A61;text-transform:uppercase}
+
+.device{padding:9px;border-radius:16px;background:linear-gradient(180deg,#2A2B2F,#161719);
+  box-shadow:0 1px 0 rgba(255,255,255,.14) inset,0 24px 46px rgba(0,0,0,.6)}
+.screen{width:120px;height:240px;border-radius:6px;overflow:hidden;background:#000;position:relative}
+.big-view .device{transform:scale(2.4);transform-origin:top center;margin-bottom:370px}
+.big-view{padding:0 110px}
+.col button,.col .cap{position:relative;z-index:2}
+
+/* ---------- 屏内框架 ---------- */
+.status{height:14px;display:flex;align-items:center;justify-content:space-between;padding:0 4px;
+  font-size:8px;letter-spacing:.04em;background:#0B0B0C;border-bottom:1px solid var(--hair)}
+.status .dir{color:#000;background:var(--volt);padding:0 3px;font-weight:700;font-size:8px}
+.status .dir.rev{background:#33E0FF}
+.status .r{color:var(--dim)}
+.hint{position:absolute;left:0;right:0;bottom:0;height:14px;background:#0B0B0C;border-top:1px solid var(--hair);
+  display:flex;align-items:center;justify-content:space-between;padding:0 4px;font-size:8px;color:#5A5A61}
+.view{position:absolute;inset:14px 0 14px 0;overflow:hidden}
+.view[hidden]{display:none}
+
+/* ---------- 主界面：动画即主体 ---------- */
+.home{position:absolute;inset:0;background:#080602}
+.shaft{position:absolute;inset:0}
+.shaft svg{display:block;width:100%;height:100%}
+.shaft .spin{animation:roll calc(60s / var(--rpm,120)) linear infinite;will-change:transform}
+.shaft[data-run="0"] .spin{animation-play-state:paused}
+.shaft .bk{stroke:var(--bk,#4A2400)}
+.shaft .ao{stroke:var(--ao,#2E1200)}
+.mchip{background:var(--amber);color:#000;font-weight:800;padding:0 3px;font-size:8px;letter-spacing:0}
+.status .dir{background:none;color:#9A9AA2;padding:0;font-weight:600}
+.status .dir.rev{background:none;color:#33E0FF}
+.shaft[data-dir="rev"] .spin{animation-direction:reverse}
+.shaft[data-lit="0"] .lit{display:none}
+.shaft[data-lit="0"] .ao{display:none}
+.shaft[data-lit="0"] .spin path[stroke^="url"]{stroke:#F07A10}
+@keyframes roll{from{transform:translateY(0)}to{transform:translateY(17px)}}
+/* 棘轮：不连续转，一次咬合走一个牙 */
+@keyframes detent{from{transform:translateY(0)}to{transform:translateY(17px)}}
+.shaft[data-mode="rat"] .spin{animation:none}
+.shaft[data-mode="rat"] .spin.click{animation:detent .1s cubic-bezier(.15,.9,.3,1);animation-play-state:running}
+/* 待机时压暗，运行时全亮 —— 屏幕亮度本身就是状态 */
+.dim{position:absolute;inset:0;background:rgba(0,0,0,.5);transition:background .2s;pointer-events:none}
+.home[data-run="1"] .dim{background:rgba(0,0,0,0)}
+
+/* 右缘实时扭矩柱 */
+.tqcol{position:absolute;right:0;top:0;bottom:44px;width:6px;background:rgba(0,0,0,.62)}
+.tqcol i{position:absolute;left:0;right:0;bottom:0;height:0;background:linear-gradient(0deg,var(--amber),var(--orange))}
+.tqcol .tick{position:absolute;left:0;right:0;height:2px;background:var(--volt)}
+
+/* 底部读数压条 */
+.scrim{position:absolute;left:0;right:0;bottom:0;height:44px;padding:3px 6px 0;
+  background:linear-gradient(180deg,rgba(0,0,0,0),rgba(0,0,0,.9) 26%,#000 100%)}
+.scrim .k{font-size:8px;color:var(--dim);letter-spacing:.1em;line-height:1}
+.scrim .v{font-size:28px;font-weight:800;letter-spacing:-0.055em;line-height:1;font-variant-numeric:tabular-nums;
+  text-shadow:0 1px 0 #000}
+.scrim .v small{font-size:9px;font-weight:600;color:var(--dim);margin-left:2px;letter-spacing:0}
+.scrim .foot{display:flex;justify-content:space-between;align-items:baseline;margin-top:3px;
+  font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums}
+.scrim .foot b{color:#D6D6DC;font-weight:700}
+
+/* 状态印章 */
+.stamp{position:absolute;left:0;right:0;top:58px;text-align:center;font-size:20px;font-weight:800;
+  letter-spacing:.06em;padding:5px 0;background:var(--ok);color:#000;transform:skewX(-8deg) scale(.9);
+  opacity:0;transition:opacity .12s,transform .12s}
+.stamp.on{opacity:1;transform:skewX(-8deg) scale(1)}
+.stamp.lock{background:#33E0FF}
+
+/* ---------- 菜单 ---------- */
+.head{height:16px;display:flex;align-items:center;justify-content:space-between;padding:0 5px;
+  font-size:9px;font-weight:700;letter-spacing:.04em;background:#0F0F11;border-bottom:1px solid var(--hair)}
+.head .lv{color:var(--amber);font-weight:600}
+.list{height:196px;overflow:hidden}
+.track{transition:transform .16s cubic-bezier(.2,.8,.2,1)}
+.row{height:24px;display:flex;align-items:center;gap:4px;padding:0 5px 0 6px;position:relative;
+  border-bottom:1px solid #০0;border-bottom:1px solid #0E0E10}
+.row .bar3{position:absolute;left:0;top:0;bottom:0;width:3px;background:transparent}
+.row .lb{font-size:10px;flex:1;color:#C9C9CF;letter-spacing:-0.01em}
+.row .vl{font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums}
+.row.sel{background:#1A1A1D}
+.row.sel .bar3{background:linear-gradient(180deg,var(--amber),var(--orange))}
+.row.sel .lb{color:#fff}
+.row.sel .vl{color:var(--amber)}
+.row.dg .lb{color:var(--danger)}
+.row.ed{background:#2A1806}
+.row.ed .vl{color:#fff;font-weight:700}
+.g2{position:absolute;left:6px;right:5px;bottom:2px;height:2px;background:#2C2C2E}
+.g2 i{display:block;height:100%;background:linear-gradient(90deg,var(--amber),var(--orange))}
+.sheet{position:absolute;left:0;right:0;bottom:0;background:#121214;border-top:1px solid #2C2C2E;padding:6px 5px;
+  transform:translateY(130%);transition:transform .2s cubic-bezier(.2,.8,.2,1)}
+.sheet.on{transform:none}
+.sheet h3{margin:0 0 2px;font-size:10px;font-weight:700}
+.sheet p{margin:0 0 6px;font-size:8px;color:var(--dim);line-height:1.4}
+.opts{display:flex;gap:4px}
+.opt{flex:1;text-align:center;padding:4px 0;font-size:9px;background:#232326;color:#C9C9CF}
+.opt.on{background:var(--fg);color:#000;font-weight:700}
+.opt.on.warn{background:var(--danger);color:#fff}
+
+/* ---------- 输入件 ---------- */
+.drum{width:170px;height:64px;border-radius:12px;overflow:hidden;position:relative;cursor:grab;touch-action:none;
+  background:linear-gradient(180deg,#111214,#232428 18%,#3A3C42 50%,#232428 82%,#111214);
+  box-shadow:0 1px 0 rgba(255,255,255,.14) inset,0 14px 26px rgba(0,0,0,.5)}
+.drum:active,.drum.pressed{filter:brightness(1.3);cursor:grabbing}
+.drum svg{display:block;width:100%;height:100%}
+button{font-family:inherit;font-size:12px;padding:9px 15px;border-radius:10px;cursor:pointer;
+  background:#1C1C1E;color:#D8D8DC;border:1px solid #2C2C2E}
+button:hover{background:#232326}
+#trigger{background:linear-gradient(180deg,#FF8A2B,#E05F00);color:#180800;font-weight:700;border-color:#000;
+  padding:14px 26px}
+#trigger:active{filter:brightness(1.15)}
+button:focus-visible,.drum:focus-visible{outline:2px solid #2997FF;outline-offset:3px}
+.legend{font-size:11px;color:#5A5A61;line-height:1.85;text-align:left;max-width:240px}
+.legend b{color:#9E9EA6}
+kbd{background:#1C1C1E;border:1px solid #2C2C2E;border-radius:4px;padding:1px 5px;font-size:10px;color:#A1A1A6}
+@media(prefers-reduced-motion:reduce){.track,.sheet{transition:none}.shaft .spin{animation:none}}
+</style>
+</head>
+<body>
+
+<div class="col" id="stage">
+  <div class="device">
+    <div class="screen" id="screen" tabindex="0">
+      <div class="status">
+        <span style="display:flex;align-items:center;gap:3px">
+          <span class="mchip" id="modeChip">标准</span>
+          <span class="dir" id="dirTag">正转</span>
+        </span>
+        <span class="r"><span id="clock">14:02</span> ▮</span>
+      </div>
+
+      <!-- ========== 主界面 ========== -->
+      <div class="view" id="vHome">
+        <div class="home" id="home" data-run="0">
+          <div class="shaft" id="shaft" data-run="0" data-dir="fwd"></div>
+          <div class="dim"></div>
+          <div class="tqcol"><i id="tqBar"></i><span class="tick" id="tqTick"></span></div>
+          <div class="stamp" id="stamp">到位</div>
+          <div class="scrim">
+            <div class="k">目标扭矩</div>
+            <div class="v"><span id="tqSet">1.20</span><small>N·m</small></div>
+            <div class="foot">
+              <span><b id="rpmNow">0</b> <i id="rpmUnit" style="font-style:normal">rpm</i></span>
+              <span><b id="tqNow">0.00</b> 实时</span>
+              <span>计 <b id="cnt">128</b></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== 菜单 ========== -->
+      <div class="view" id="vMenu" hidden>
+        <div class="head"><span id="mTitle">设置</span><span class="lv" id="mLv">二级</span></div>
+        <div class="list"><div class="track" id="track"></div></div>
+        <div class="sheet" id="sheet">
+          <h3>恢复出厂</h3>
+          <p>校准与计数清零，不可撤销。</p>
+          <div class="opts"><div class="opt on" id="optCancel">取消</div><div class="opt" id="optOk">确认</div></div>
+        </div>
+      </div>
+
+      <div class="hint"><span id="hL">滚动调扭矩</span><span id="hR">短按 菜单</span></div>
+    </div>
+  </div>
+  <div class="cap">120 × 240 · 实际像素</div>
+  <div style="display:flex;gap:8px">
+    <button id="zoom">放大 2.4×</button>
+    <button id="lit">光影 关</button>
+  </div>
+</div>
+
+<div class="col">
+  <div class="drum" id="drum" tabindex="0" role="slider" aria-label="横置滚轮">
+    <svg viewBox="0 0 170 64" aria-hidden="true">
+      <defs><clipPath id="dc"><rect width="170" height="64" rx="12"/></clipPath></defs>
+      <g clip-path="url(#dc)" id="drumRidges"></g>
+    </svg>
+  </div>
+  <div class="cap">横置滚轮 · 自身即按键</div>
+  <button id="trigger">按住 = 拧</button>
+  <p class="legend">
+    上下拖滚轮 = 滚格；点一下 = <b>短按</b>；按住 0.5 秒 = <b>长按</b>。<br>
+    <b>主界面</b> 滚动调扭矩 · 短按进菜单 · <b>双击换模式</b> · 长按锁屏<br>
+    <b>菜单</b> 滚动移光标 · 短按进入 · 长按返回<br>
+    <b>编辑</b> 滚动改值 · 短按保存 · 长按放弃<br><br>
+    键盘 <kbd>↑</kbd><kbd>↓</kbd> 滚 · <kbd>Enter</kbd> 短按 · <kbd>Esc</kbd> 长按 · <kbd>空格</kbd> 拧
+  </p>
+</div>
+
+<script>
+/* ============ 数据 ============ */
+const root={title:'设置',items:[
+  {k:'speed', label:'转速上限',type:'num', v:450,min:100,max:900,step:50,unit:'rpm',dp:0},
+  {k:'reflex',label:'打滑反射',type:'enum',v:2,opts:['关','轻','标准','强']},
+  {k:'grip',  label:'握力灵敏',type:'num', v:6,min:1,max:10,step:1,unit:'',dp:0},
+  {k:'dir',   label:'旋向',    type:'enum',v:0,opts:['正转','反转']},
+  {k:'sys',   label:'系统',    type:'menu',child:{title:'系统',items:[
+    {k:'cal',  label:'扭矩校准',type:'read',v:'就绪'},
+    {k:'unit', label:'扭矩单位',type:'enum',v:0,opts:['N·m','kgf·cm','lbf·in']},
+    {k:'reset',label:'恢复出厂',type:'danger'},
+    {k:'about',label:'关于',   type:'read',v:'v1.4.2'}
+  ]}}
+]};
+const S={screen:'home',stack:[root],idx:0,mode:'browse',confirmOn:0,locked:false,
+  torque:1.20,now:0,rpm:0,count:128,running:false,done:0,backup:null};
+const ROW=24,VIEW=196,MAXTQ=3;
+const $=id=>document.getElementById(id);
+const cur=()=>S.stack[S.stack.length-1];
+const item=()=>cur().items[S.idx];
+const byKey=k=>root.items.find(i=>i.k===k)||root.items[4].child.items.find(i=>i.k===k);
+
+/* ============ 纵向螺纹（主界面）+ 滚轮鼓面 ============ */
+function buildShaft(el,o){
+  o=Object.assign({w:120,h:212,cx:60,amp:46,pitch:17,depth:4.5,wire:14,turns:18,steps:2600},o||{});
+  const L=o.cx-o.amp-o.wire/2-2,R=o.cx+o.amp+o.wire/2+2;
+  const body=`M${L},-10 L${R},-10 L${R},${o.h+10} L${L},${o.h+10} Z`;   // 满屏轴身，不收尖
+  const y0=-o.pitch*2,total=o.turns*Math.PI*2;
+  const back=[],front=[];let c=null,s=null;
+  for(let i=0;i<=o.steps;i++){
+    const t=i/o.steps*total;
+    const x=o.cx+o.amp*Math.sin(t), y=y0+(t/(Math.PI*2))*o.pitch+o.depth*Math.cos(t);
+    const sg=Math.cos(t)>=0?1:-1;
+    if(sg!==s){ if(c&&c.length>1)(s===1?front:back).push(c); c=c&&c.length?[c[c.length-1]]:[]; s=sg; }
+    c.push([x,y]);
+  }
+  if(c&&c.length>1)(s===1?front:back).push(c);
+  const d=p=>'M'+p.map(q=>q[0].toFixed(1)+','+q[1].toFixed(1)).join('L');
+  const P=(dd,st,w,cls,op)=>`<path d="${dd}" fill="none" stroke="${st}" stroke-width="${w}"`+
+    ` stroke-linecap="round" stroke-linejoin="round"${cls?` class="${cls}"`:''}${op?` opacity="${op}"`:''}/>`;
+  const off=(g,dx,dy)=>g.map(q=>[q[0]+dx,q[1]+dy]);
+
+  let coils='';
+  for(const g of back) coils+=P(d(g),'#0A0C14',o.wire+2);
+  for(const g of back) coils+=P(d(g),'#4A2400',o.wire,'bk');
+  for(const g of front)coils+=P(d(g),'#0A0C14',o.wire+2);
+  // 牙谷遮蔽：每圈下缘压暗，是体积感的主要来源
+  for(const g of front)coils+=P(d(off(g,0.6,o.wire*0.30)),'#2E1200',o.wire*0.55,'ao',.75);
+  for(const g of front)coils+=P(d(g),'url(#sF)',o.wire);
+
+  el.innerHTML=`<svg viewBox="0 0 ${o.w} ${o.h}" aria-hidden="true">
+    <defs>
+      <!-- 圆柱光照：沿轴向的有限色阶，模拟 RGB565 下的真实观感 -->
+      <linearGradient id="sF" gradientUnits="userSpaceOnUse" x1="${L}" y1="0" x2="${R}" y2="0">
+        <stop offset="0"    stop-color="#7E3300"/><stop offset=".17" stop-color="#7E3300"/>
+        <stop offset=".17"  stop-color="#B04C00"/><stop offset=".34" stop-color="#B04C00"/>
+        <stop offset=".34"  stop-color="#E06400"/><stop offset=".50" stop-color="#E06400"/>
+        <stop offset=".50"  stop-color="#FF8A2B"/><stop offset=".62" stop-color="#FF8A2B"/>
+        <stop offset=".62"  stop-color="#E06400"/><stop offset=".78" stop-color="#E06400"/>
+        <stop offset=".78"  stop-color="#9C4000"/><stop offset="1"   stop-color="#9C4000"/>
+      </linearGradient>
+      <linearGradient id="sC" gradientUnits="userSpaceOnUse" x1="${L}" y1="0" x2="${R}" y2="0">
+        <stop offset="0" stop-color="#1C0E00"/><stop offset=".5" stop-color="#3A1C05"/><stop offset="1" stop-color="#140900"/>
+      </linearGradient>
+      <!-- 右缘冷色反光：把橙色从塑料拉向金属 -->
+      <linearGradient id="rim" gradientUnits="userSpaceOnUse" x1="${R-9}" y1="0" x2="${R}" y2="0">
+        <stop offset="0" stop-color="#BFE6FF" stop-opacity="0"/>
+        <stop offset="1" stop-color="#CFF0FF" stop-opacity=".55"/>
+      </linearGradient>
+      <!-- 抖动颗粒：代替连续渐变，避免 16 位色带 -->
+      <pattern id="grain" width="4" height="4" patternUnits="userSpaceOnUse">
+        <rect x="0" y="0" width="1" height="1" fill="#fff" opacity=".55"/>
+        <rect x="2" y="2" width="1" height="1" fill="#fff" opacity=".35"/>
+        <rect x="1" y="3" width="1" height="1" fill="#000" opacity=".45"/>
+        <rect x="3" y="0" width="1" height="1" fill="#000" opacity=".3"/>
+      </pattern>
+      <clipPath id="sClip"><path d="${body}"/></clipPath>
+    </defs>
+    <path d="${body}" fill="url(#sC)"/>
+    <g clip-path="url(#sClip)">
+      <g class="spin">${coils}</g>
+      <g class="lit">
+        <rect x="${R-9}" y="-10" width="9" height="${o.h+20}" fill="url(#rim)" style="mix-blend-mode:screen"/>
+        <rect x="${L}" y="-10" width="${R-L}" height="${o.h+20}" fill="url(#grain)" opacity=".13"/>
+      </g>
+    </g>
+    <path d="${body}" fill="none" stroke="#0A0C14" stroke-width="3" stroke-linejoin="round"/></svg>`;
+}
+buildShaft($('shaft'));
+(function(){let d='';
+  for(let i=-4;i<16;i++){const x=i*14;
+    d+=`<line x1="${x}" y1="-24" x2="${x-34}" y2="92" stroke="#0B0C0E" stroke-width="5" opacity=".85"/>`;
+    d+=`<line x1="${x+5}" y1="-24" x2="${x-29}" y2="92" stroke="#4A4D55" stroke-width="2" opacity=".55"/>`;}
+  $('drumRidges').innerHTML=d;})();
+
+/* ============ 三种模式：颜色随模式渐变 ============ */
+const MODES=[
+  {k:'pre',name:'精密',base:'#2FA8FF',tq:0.35,sp:200},
+  {k:'std',name:'标准',base:'#FF8A2B',tq:1.20,sp:450},
+  {k:'rat',name:'棘轮',base:'#3ED66A',tq:2.40,sp:300}
+];
+S.mi=1; S.kick=0; S.teeth=0; S.ratT=0;
+/* 咬合一格：重启一次性动画。注意 SVG 元素没有 offsetWidth，
+   用 getBoundingClientRect 才能真正触发重排、让动画重新播放 */
+function detent(){
+  const sp=$('shaft').querySelector('.spin');
+  sp.classList.remove('click');
+  sp.getBoundingClientRect();
+  sp.classList.add('click');
+}
+const hx=h=>[parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];
+const rg=a=>'#'+a.map(v=>Math.round(Math.min(255,Math.max(0,v))).toString(16).padStart(2,'0')).join('');
+const shade=(c,f)=>rg(c.map(v=>v*f));
+const lighten=(c,f)=>rg(c.map(v=>v+(255-v)*f));
+const mixc=(a,b,t)=>a.map((v,i)=>v+(b[i]-v)*t);
+
+const BAND=[.40,.60,.84,null,.84,.54];      // null = 牙峰，向白提亮
+function applyColors(baseArr){
+  const stops=document.querySelectorAll('#sF stop');
+  BAND.forEach((f,i)=>{
+    const col = f===null ? lighten(baseArr,.16) : shade(baseArr,f);
+    stops[i*2].setAttribute('stop-color',col);
+    stops[i*2+1].setAttribute('stop-color',col);
+  });
+  const cs=document.querySelectorAll('#sC stop');
+  [.18,.32,.12].forEach((f,i)=>cs[i].setAttribute('stop-color',shade(baseArr,f)));
+  const sc=$('screen').style;
+  sc.setProperty('--bk',shade(baseArr,.34));
+  sc.setProperty('--ao',shade(baseArr,.20));
+  sc.setProperty('--amber',lighten(baseArr,.12));
+  sc.setProperty('--orange',shade(baseArr,.78));
+}
+
+let colFrom=hx(MODES[S.mi].base), colTo=colFrom.slice(), colT=1;
+function nextMode(){
+  const old=MODES[S.mi];
+  old.tq=S.torque; old.sp=byKey('speed').v;          // 记住当前模式下的设定
+  S.mi=(S.mi+1)%MODES.length;
+  const m=MODES[S.mi];
+  S.torque=m.tq; byKey('speed').v=m.sp;
+  colFrom=colTo.slice(); colTo=hx(m.base); colT=0;
+  S.kick=0.7;                                        // 切换时螺纹带一下转速
+  if(m.k==='rat'){                                   // 棘轮没有连续转，改用一串减速的咬合
+    S.teeth=0;
+    [0,80,170,280,420,590].forEach(ms=>setTimeout(detent,ms));
+  }
+  $('modeChip').textContent=m.name;
+  render();
+}
+applyColors(colFrom);
+function fmt(it){
+  if(it.type==='num') return it.v.toFixed(it.dp)+(it.unit?' '+it.unit:'');
+  if(it.type==='enum')return it.opts[it.v];
+  if(it.type==='read')return it.v; return '';
+}
+function render(){
+  $('vHome').hidden=S.screen!=='home';
+  $('vMenu').hidden=S.screen!=='menu';
+  const rev=byKey('dir').v===1;
+  $('dirTag').textContent=rev?'反转':'正转';
+  $('dirTag').classList.toggle('rev',rev);
+  $('shaft').dataset.dir=rev?'rev':'fwd';
+
+  if(S.screen==='home'){
+    const rat=MODES[S.mi].k==='rat';
+    $('shaft').dataset.mode=MODES[S.mi].k;
+    $('tqSet').textContent=S.torque.toFixed(2);
+    $('tqNow').textContent=S.now.toFixed(2);
+    $('rpmNow').textContent=rat?S.teeth:Math.round(S.rpm);
+    $('rpmUnit').textContent=rat?'齿':'rpm';
+    $('cnt').textContent=S.count;
+    $('tqBar').style.height=Math.min(100,S.now/MAXTQ*100)+'%';
+    $('tqTick').style.bottom='calc('+(S.torque/MAXTQ*100)+'% - 1px)';
+    $('home').dataset.run=(S.running&&!S.locked)?'1':'0';
+    const stamp=$('stamp');
+    stamp.classList.toggle('lock',S.locked);
+    stamp.textContent=S.locked?'锁定':'到位';
+    stamp.classList.toggle('on',S.locked||S.done>0);
+    $('hL').textContent=S.locked?'—':'滚动调扭矩';
+    $('hR').textContent=S.locked?'长按解锁':'双击 换模式';
+    return;
+  }
+  const m=cur();
+  $('mTitle').textContent=m.title;
+  $('mLv').textContent=S.stack.length>1?'三级':'二级';
+  $('track').innerHTML=m.items.map((it,i)=>{
+    const sel=i===S.idx,ed=sel&&S.mode==='edit';
+    const right=(it.type==='menu'||it.type==='danger')?'<span class="vl">›</span>':`<span class="vl">${fmt(it)}</span>`;
+    let g='';
+    if(ed&&it.type==='num'){const p=(it.v-it.min)/(it.max-it.min)*100;
+      g=`<div class="g2"><i style="width:${p.toFixed(1)}%"></i></div>`;}
+    return `<div class="row ${sel?'sel':''} ${ed?'ed':''} ${it.type==='danger'?'dg':''}">
+      <div class="bar3"></div><span class="lb">${it.label}</span>${right}${g}</div>`;
+  }).join('');
+  const maxOff=Math.max(0,m.items.length*ROW-VIEW);
+  $('track').style.transform=`translateY(${-Math.min(maxOff,Math.max(0,(S.idx+0.5)*ROW-VIEW/2))}px)`;
+  const it=item();
+  $('hL').textContent=S.mode==='edit'?'滚动改值':S.mode==='confirm'?'滚动切换':'滚动选择';
+  $('hR').textContent=S.mode==='edit'?'短按存 长按弃':S.mode==='confirm'?'短按执行'
+    :it.type==='menu'?'短按打开':it.type==='read'?'长按返回':'短按编辑';
+  $('sheet').classList.toggle('on',S.mode==='confirm');
+  $('optCancel').classList.toggle('on',S.confirmOn===0);
+  $('optOk').classList.toggle('on',S.confirmOn===1);
+  $('optOk').classList.toggle('warn',S.confirmOn===1);
+}
+
+/* ============ 输入 ============ */
+function scroll(dir){
+  if(S.locked) return;
+  if(S.screen==='home'){ S.torque=Math.min(3,Math.max(0.10,+(S.torque+dir*0.05).toFixed(2)));
+    MODES[S.mi].tq=S.torque; }
+  else if(S.mode==='browse'){ S.idx=Math.min(cur().items.length-1,Math.max(0,S.idx+dir)); }
+  else if(S.mode==='edit'){
+    const it=item();
+    if(it.type==='num') it.v=Math.min(it.max,Math.max(it.min,+(it.v+dir*it.step).toFixed(4)));
+    else if(it.type==='enum') it.v=(it.v+dir+it.opts.length)%it.opts.length;
+  } else if(S.mode==='confirm'){ S.confirmOn=S.confirmOn?0:1; }
+  render();
+}
+function shortPress(){
+  if(S.locked||S.running) return;
+  if(S.screen==='home'){S.screen='menu';S.stack=[root];S.idx=0;S.mode='browse';}
+  else if(S.mode==='browse'){
+    const it=item();
+    if(it.type==='menu'){S.stack.push(it.child);S.idx=0;}
+    else if(it.type==='num'||it.type==='enum'){S.mode='edit';S.backup=it.v;}
+    else if(it.type==='danger'){S.mode='confirm';S.confirmOn=0;}
+  }
+  else if(S.mode==='edit'){S.mode='browse';S.backup=null;}
+  else if(S.mode==='confirm'){S.mode='browse';}
+  render();
+}
+/* 主界面双击 = 换模式；其余场合短按立即生效 */
+let tapT=null;
+function tapPress(){
+  if(S.screen!=='home'||S.locked||S.running){ shortPress(); return; }
+  if(tapT){ clearTimeout(tapT); tapT=null; nextMode(); return; }
+  tapT=setTimeout(()=>{tapT=null;shortPress();},260);
+}
+
+function longPress(){
+  if(S.screen==='home'){S.locked=!S.locked;render();return;}
+  if(S.mode==='edit'){item().v=S.backup;S.mode='browse';S.backup=null;}
+  else if(S.mode==='confirm'){S.mode='browse';}
+  else if(S.stack.length>1){S.stack.pop();S.idx=0;}
+  else{S.screen='home';}
+  render();
+}
+
+/* ============ 拧螺丝：纵向螺纹动起来 ============ */
+let hold=false;
+function setHold(v){
+  if(v && (S.locked||S.screen!=='home')) return;
+  hold=v; if(!v){S.done=0;}
+}
+$('trigger').addEventListener('pointerdown',e=>{e.preventDefault();setHold(true)});
+addEventListener('pointerup',()=>setHold(false));
+addEventListener('keydown',e=>{
+  if(e.key===' '&&!e.repeat){setHold(true);e.preventDefault();}
+  else if(e.key==='ArrowDown'){scroll(1);e.preventDefault();}
+  else if(e.key==='ArrowUp'){scroll(-1);e.preventDefault();}
+  else if(e.key==='Enter'){tapPress();e.preventDefault();}
+  else if(e.key==='Escape'){longPress();}
+});
+addEventListener('keyup',e=>{if(e.key===' ')setHold(false)});
+
+let t0=performance.now();
+(function tick(now){
+  const dt=Math.min(.05,(now-t0)/1000); t0=now;
+  const target=byKey('speed').v;
+  const isRat=MODES[S.mi].k==='rat';
+  if(isRat){
+    if(hold && S.done===0){
+      S.running=true; S.rpm=0;
+      S.ratT+=dt;
+      if(S.ratT>=0.18){                      // 每 0.18s 咬合一次
+        S.ratT=0; S.teeth++;
+        S.now=Math.min(S.torque,+(S.now+S.torque*0.16).toFixed(3));
+        detent();
+        if(S.now>=S.torque){ S.done=1; S.count++; S.running=false; }
+      }
+    } else {
+      S.running=false; S.rpm=0; S.ratT=0;
+      if(!hold){ S.now+=(0-S.now)*Math.min(1,dt*5); if(S.now<0.01) S.teeth=0; }
+    }
+  } else if(hold && S.done===0){
+    S.running=true;
+    S.rpm+=(target-S.rpm)*Math.min(1,dt*6);
+    S.now+=dt*0.75*(1-S.now/(S.torque*1.35));      // 逐渐吃力
+    if(S.now>=S.torque){ S.now=S.torque; S.done=1; S.count++; S.running=false; S.rpm=0; }
+  } else {
+    S.running=false;
+    S.rpm+=(0-S.rpm)*Math.min(1,dt*8);
+    if(!hold) S.now+=(0-S.now)*Math.min(1,dt*5);
+  }
+  const sh=$('shaft');
+  if(S.kick>0) S.kick=Math.max(0,S.kick-dt);
+  if(colT<1){
+    colT=Math.min(1,colT+dt/0.7);
+    const e=colT<.5?2*colT*colT:1-Math.pow(-2*colT+2,2)/2;
+    applyColors(mixc(colFrom,colTo,e));
+  }
+  const spinRpm=Math.max(S.rpm, S.kick>0?520*(S.kick/0.7):0);
+  sh.dataset.run=(S.running||S.kick>0)?'1':'0';
+  sh.style.setProperty('--rpm',Math.max(20,spinRpm).toFixed(0));
+  if(S.screen==='home') render();
+  requestAnimationFrame(tick);
+})(t0);
+
+/* ============ 滚轮鼓 ============ */
+const drum=$('drum'); let drag=false,lastY=0,acc=0,ht=null,held=false;
+const DETENT=15;
+drum.addEventListener('pointerdown',e=>{drag=true;held=false;lastY=e.clientY;acc=0;
+  drum.setPointerCapture(e.pointerId);drum.classList.add('pressed');
+  ht=setTimeout(()=>{held=true;longPress()},500);});
+drum.addEventListener('pointermove',e=>{
+  if(!drag)return;
+  const d=e.clientY-lastY;lastY=e.clientY;acc+=d;
+  if(Math.abs(acc)>4&&ht){clearTimeout(ht);ht=null;}
+  while(Math.abs(acc)>=DETENT){scroll(acc>0?1:-1);acc-=Math.sign(acc)*DETENT;}
+});
+drum.addEventListener('pointerup',()=>{drag=false;drum.classList.remove('pressed');
+  if(ht){clearTimeout(ht);ht=null;if(!held)tapPress();}});
+$('screen').addEventListener('wheel',e=>{e.preventDefault();scroll(e.deltaY>0?1:-1)},{passive:false});
+
+let z=false;
+$('shaft').dataset.lit='1';
+let litOn=true;
+$('lit').onclick=()=>{litOn=!litOn;$('shaft').dataset.lit=litOn?'1':'0';
+  $('lit').textContent=litOn?'光影 关':'光影 开'};
+$('zoom').onclick=()=>{z=!z;$('stage').classList.toggle('big-view',z);$('zoom').textContent=z?'还原 1×':'放大 2.4×'};
+setInterval(()=>{const d=new Date();
+  $('clock').textContent=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')},10000);
+render();$('screen').focus();
+</script>
+</body>
+</html>

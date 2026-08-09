@@ -1,0 +1,14 @@
+# ESP-IDF 构建产物
+build/
+sdkconfig.old
+
+# 仿真输出（可用 tools/sim_ui.py 重新生成）
+sim_out/
+sim_scrim.png
+sim_topbar.png
+
+# 编辑器/系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>120×240 真机模拟 · RGB565</title>
+<style>
+:root{--font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue","PingFang SC",sans-serif}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:#0A0B0D;color:#E8E8EC;font-family:var(--font);
+  display:flex;flex-direction:column;align-items:center;gap:22px;padding:28px 16px 60px}
+h1{font-size:16px;font-weight:700;letter-spacing:-0.02em;margin:0}
+.bar{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+button{font-family:inherit;font-size:12px;padding:8px 14px;border-radius:9px;cursor:pointer;
+  background:#1C1C1E;color:#D8D8DC;border:1px solid #2C2C2E}
+button[aria-pressed="true"]{background:#F2F2F4;color:#000;font-weight:700}
+.pair{display:flex;gap:34px;flex-wrap:wrap;justify-content:center;align-items:flex-start}
+.unit{display:flex;flex-direction:column;align-items:center;gap:8px}
+.tag{font-size:11px;letter-spacing:.1em;color:#8A8A92;text-transform:uppercase}
+canvas{display:block;background:#000;image-rendering:pixelated;border:1px solid #26262A}
+.note{max-width:620px;font-size:12px;line-height:1.85;color:#8A8A92}
+.note b{color:#E8E8EC}
+.note code{background:#1C1C1E;padding:1px 5px;border-radius:4px;color:#FFB020;font-size:11px}
+</style>
+</head>
+<body>
+
+<h1>120×240 / RGB565 真机模拟</h1>
+<div class="bar">
+  <button id="bDither" aria-pressed="true">有序抖动 开</button>
+  <button id="b565" aria-pressed="true">RGB565 量化 开</button>
+  <button id="bRun" aria-pressed="true">运行中</button>
+</div>
+
+<div class="pair">
+  <div class="unit">
+    <canvas id="cA1" width="120" height="240" style="width:120px;height:240px"></canvas>
+    <canvas id="cA2" width="120" height="240" style="width:288px;height:576px"></canvas>
+    <div class="tag">现状</div>
+  </div>
+  <div class="unit">
+    <canvas id="cB1" width="120" height="240" style="width:120px;height:240px"></canvas>
+    <canvas id="cB2" width="120" height="240" style="width:288px;height:576px"></canvas>
+    <div class="tag">优化后</div>
+  </div>
+</div>
+
+<p class="note" id="note"></p>
+
+<script>
+/* ================= 参数 ================= */
+const W=120,H=240,CX=60,AMP=46,PITCH=17,DEPTH=4.5,WIRE=14;
+const TOPBAR=14, BOTBAR=14, SCRIM=44;
+const BASE=[0xFF,0x8A,0x2B];              // 标准模式橙
+let dither=true, q565=true, running=true;
+
+const bayer=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]];
+const clamp=v=>v<0?0:v>255?255:v;
+const rg=a=>'#'+a.map(v=>Math.round(clamp(v)).toString(16).padStart(2,'0')).join('');
+const shade=(c,f)=>rg(c.map(v=>v*f));
+const lighten=(c,f)=>rg(c.map(v=>v+(255-v)*f));
+/* 把颜色对齐到 RGB565 能表示的格点，省得量化时再漂移 */
+const snap=hex=>{
+  const n=parseInt(hex.slice(1),16);
+  const r=(n>>16)&255,g=(n>>8)&255,b=n&255;
+  return '#'+[(r&0xF8)|(r>>5),(g&0xFC)|(g>>6),(b&0xF8)|(b>>5)]
+    .map(v=>v.toString(16).padStart(2,'0')).join('');
+};
+
+/* canvas 的 font 简写只要有一处解析失败就整条忽略，
+   所以这里用最保守的字体栈，并且每次都显式设 baseline */
+const FF='"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif';
+function txt(ctx,s,x,y,size,color,weight){
+  ctx.textBaseline='top';
+  ctx.font=(weight?weight+' ':'')+size+'px '+FF;
+  ctx.fillStyle=color;
+  ctx.fillText(s,x,y);
+}
+
+/* ================= 画一屏 ================= */
+function drawScreen(ctx,O,off){
+  const L=CX-AMP-WIRE/2-2,R=CX+AMP+WIRE/2+2;
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+
+  const top=TOPBAR, bot=O?0:BOTBAR, botY=H-bot, areaH=botY-top;
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0,top,W,areaH); ctx.clip();
+  ctx.translate(0,top);
+
+  /* --- 芯轴 --- */
+  const core=ctx.createLinearGradient(L,0,R,0);
+  core.addColorStop(0,shade(BASE,.18)); core.addColorStop(.5,shade(BASE,.32)); core.addColorStop(1,shade(BASE,.12));
+  ctx.fillStyle=core; ctx.fillRect(L,0,R-L,areaH);
+
+  /* --- 牙面色阶：现状 6 档 / 优化 4 档并对齐 565 格点 --- */
+  const bands = O ? [.42,.72,null,.58] : [.40,.60,.84,null,.84,.54];
+  const g=ctx.createLinearGradient(L,0,R,0);
+  bands.forEach((f,i)=>{
+    let col = f===null ? lighten(BASE,O?.20:.16) : shade(BASE,f);
+    if(O) col=snap(col);
+    const a=i/bands.length, b=(i+1)/bands.length;
+    g.addColorStop(a,col); g.addColorStop(b-0.0001,col);
+  });
+
+  /* --- 螺旋线取点 --- */
+  const y0=-PITCH*2, turns=Math.ceil((areaH+PITCH*4)/PITCH)+1, total=turns*Math.PI*2, steps=1400;
+  const back=[],front=[]; let cur=null,sg=null;
+  for(let i=0;i<=steps;i++){
+    const t=i/steps*total;
+    const x=CX+AMP*Math.sin(t), y=y0+off+(t/(Math.PI*2))*PITCH+DEPTH*Math.cos(t);
+    const s=Math.cos(t)>=0?1:-1;
+    if(s!==sg){ if(cur&&cur.length>1)(sg===1?front:back).push(cur); cur=cur&&cur.length?[cur[cur.length-1]]:[]; sg=s; }
+    cur.push([x,y]);
+  }
+  if(cur&&cur.length>1)(sg===1?front:back).push(cur);
+
+  const stroke=(seg,style,w,dx,dy,alpha)=>{
+    ctx.beginPath();
+    seg.forEach((p,i)=>i?ctx.lineTo(p[0]+(dx||0),p[1]+(dy||0)):ctx.moveTo(p[0]+(dx||0),p[1]+(dy||0)));
+    ctx.strokeStyle=style; ctx.lineWidth=w; ctx.lineCap='round'; ctx.lineJoin='round';
+    ctx.globalAlpha=alpha===undefined?1:alpha; ctx.stroke(); ctx.globalAlpha=1;
+  };
+  for(const s of back) stroke(s,'#0A0C14',WIRE+2);
+  for(const s of back) stroke(s,shade(BASE,.34),WIRE);
+  for(const s of front)stroke(s,'#0A0C14',WIRE+2);
+  /* 牙谷遮蔽：优化版加深加宽，浅遮蔽在 565 暗部会被整段量化掉 */
+  for(const s of front)stroke(s,shade(BASE,O?.14:.20),WIRE*(O?.62:.55),0.6,WIRE*.30,O?.95:.75);
+  for(const s of front)stroke(s,g,WIRE);
+
+  /* --- 右缘冷反光：宽而弱 → 窄而强 --- */
+  const rw=O?4:9;
+  const rim=ctx.createLinearGradient(R-rw,0,R,0);
+  rim.addColorStop(0,'rgba(180,225,255,0)');
+  rim.addColorStop(1,O?'rgba(200,240,255,.85)':'rgba(207,240,255,.55)');
+  ctx.globalCompositeOperation='lighter';
+  ctx.fillStyle=rim; ctx.fillRect(R-rw,0,rw,areaH);
+  ctx.globalCompositeOperation='source-over';
+
+  /* --- 右缘扭矩柱：仅现状版保留 --- */
+  if(!O){
+    const colW=6, colH=areaH-SCRIM;
+    ctx.fillStyle='rgba(0,0,0,.62)'; ctx.fillRect(W-colW,0,colW,colH);
+    const fill=0.62;
+    const gg=ctx.createLinearGradient(0,colH,0,colH*(1-fill));
+    gg.addColorStop(0,snap(shade(BASE,.8))); gg.addColorStop(1,snap(lighten(BASE,.15)));
+    ctx.fillStyle=gg; ctx.fillRect(W-colW,colH*(1-fill),colW,colH*fill);
+    ctx.fillStyle='#FFE23D'; ctx.fillRect(W-colW,colH*0.26,colW,2);
+  }
+
+  /* --- 底部读数压条 --- */
+  const sy=areaH-SCRIM;
+  const sc=ctx.createLinearGradient(0,sy,0,sy+SCRIM);
+  sc.addColorStop(0,'rgba(0,0,0,0)'); sc.addColorStop(.28,'rgba(0,0,0,.9)'); sc.addColorStop(1,'#000');
+  ctx.fillStyle=sc; ctx.fillRect(0,sy,W,SCRIM);
+
+  if(!O){
+    txt(ctx,'目标扭矩',6,sy+3,8,'#7C7C84');
+    txt(ctx,'1.20',5,sy+12,28,'#F2F2F4','800');
+    txt(ctx,'N·m',68,sy+26,9,'#7C7C84');
+    txt(ctx,'450 rpm',5,sy+34,9,'#7C7C84');
+    txt(ctx,'0.74 实时',44,sy+34,9,'#7C7C84');
+    txt(ctx,'计 128',88,sy+34,9,'#7C7C84');
+  }else{
+    /* 优化：底部只留扭矩一个数，转速上移到状态条，两个高频数字不再挤在一起 */
+    txt(ctx,'1.20',4,sy+4,32,'#F2F2F4','800');
+    txt(ctx,'N·m',76,sy+22,12,'#B8B8BE','700');
+  }
+  ctx.restore();
+
+  /* --- 状态条 / 提示条 --- */
+  ctx.fillStyle='#0B0B0C'; ctx.fillRect(0,0,W,TOPBAR);
+  ctx.fillStyle='#1C1C1F'; ctx.fillRect(0,TOPBAR-1,W,1);
+  if(!O){ ctx.fillStyle='#0B0B0C'; ctx.fillRect(0,botY,W,BOTBAR);
+          ctx.fillStyle='#1C1C1F'; ctx.fillRect(0,botY,W,1); }
+
+  if(!O){
+    ctx.fillStyle=lighten(BASE,.12); ctx.fillRect(3,3,20,9);
+    txt(ctx,'标准',4,3,8,'#000','800');
+    txt(ctx,'正转',26,3,8,'#9A9AA2');
+    txt(ctx,'14:02',86,3,8,'#9A9AA2');
+    txt(ctx,'滚动调扭矩',3,botY+3,8,'#5A5A61');
+    txt(ctx,'双击 换模式',66,botY+3,8,'#5A5A61');
+  }else{
+    ctx.fillStyle=snap(lighten(BASE,.12)); ctx.fillRect(0,0,30,13);
+    txt(ctx,'标准',1,0,12,'#000','700');
+    txt(ctx,'450',34,0,13,snap(lighten(BASE,.12)),'800');
+    txt(ctx,'rpm',60,1,11,'#7C7C84','700');
+    /* 时钟换成电量：工具上电量比时间有用得多 */
+    ctx.strokeStyle='#9A9AA2'; ctx.lineWidth=1;
+    ctx.strokeRect(96.5,2.5,20,9); ctx.fillStyle='#9A9AA2'; ctx.fillRect(98,4,13,6);
+  }
+}
+
+/* ================= RGB565 量化 + 有序抖动 ================= */
+function quantize(ctx){
+  if(!q565) return;
+  const img=ctx.getImageData(0,0,W,H), d=img.data;
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    const i=(y*W+x)*4;
+    const t=dither?(bayer[y&3][x&3]/16-0.5):0;
+    d[i]  =clamp(d[i]  +t*8)&0xF8;
+    d[i+1]=clamp(d[i+1]+t*4)&0xFC;
+    d[i+2]=clamp(d[i+2]+t*8)&0xF8;
+    d[i]  |=d[i]>>5; d[i+1]|=d[i+1]>>6; d[i+2]|=d[i+2]>>5;   // 回填低位，模拟面板展开
+  }
+  ctx.putImageData(img,0,0);
+}
+
+/* ================= 驱动 ================= */
+const A1=document.getElementById('cA1').getContext('2d');
+const A2=document.getElementById('cA2').getContext('2d');
+const B1=document.getElementById('cB1').getContext('2d');
+const B2=document.getElementById('cB2').getContext('2d');
+[A2,B2].forEach(c=>c.imageSmoothingEnabled=false);
+
+let off=0,last=performance.now();
+function frame(now){
+  const dt=(now-last)/1000; last=now;
+  if(running) off=(off+dt*450/60*PITCH)%PITCH;      // 450 rpm
+  [[A1,0],[B1,1]].forEach(([ctx,O])=>{ drawScreen(ctx,O,off); quantize(ctx); });
+  A2.clearRect(0,0,W,H); A2.drawImage(A1.canvas,0,0);
+  B2.clearRect(0,0,W,H); B2.drawImage(B1.canvas,0,0);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+const tog=(id,fn)=>{const b=document.getElementById(id);
+  b.onclick=()=>{const on=b.getAttribute('aria-pressed')!=='true';
+    b.setAttribute('aria-pressed',on);fn(on,b);};};
+tog('bDither',(on,b)=>{dither=on;b.textContent='有序抖动 '+(on?'开':'关')});
+tog('b565',(on,b)=>{q565=on;b.textContent='RGB565 量化 '+(on?'开':'关')});
+tog('bRun',(on,b)=>{running=on;b.textContent=on?'运行中':'已停止'});
+
+document.getElementById('note').innerHTML=`
+上面两块是 <b>120×240 原生像素</b>，下面是同一帧的 2.4× 邻近放大（不插值），
+所以你看到的每个方块就是一个真实物理像素。<br><br>
+<b>关掉「RGB565 量化」</b>可以对比 24 位真彩和 16 位面板的差别，
+<b>关掉「有序抖动」</b>能看到牙面上明显的色阶带。`;
+</script>
+</body>
+</html>

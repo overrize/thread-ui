@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ネジ / 螺纹动画 120×240</title>
+<style>
+  :root{ --ink:#0A0C14; --volt:#FFE23D; --paper:#F5F2E8; }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%}
+  body{
+    background:radial-gradient(120% 90% at 50% 0%,#16203a,#0A0C14 65%,#06070d);
+    color:var(--paper);font-family:ui-monospace,"SF Mono",Consolas,"PingFang SC",monospace;
+    display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;justify-content:center;padding:28px 16px;
+  }
+
+  /* ===================== 组件本体 ===================== */
+  .thread{
+    width:120px;height:240px;position:relative;overflow:hidden;
+    --rpm:180;                 /* 转速 */
+  }
+  .thread svg{display:block;width:100%;height:100%}
+  .thread .spin{
+    animation:thread-roll calc(60s / var(--rpm)) linear infinite;
+    will-change:transform;
+  }
+  .thread[data-dir="ccw"] .spin{animation-direction:reverse}
+  .thread[data-run="0"] .spin{animation-play-state:paused}
+  @keyframes thread-roll{ from{transform:translateY(0)} to{transform:translateY(13px)} }
+  @media (prefers-reduced-motion:reduce){ .thread .spin{animation:none} }
+  /* =================================================== */
+
+  .cell{display:flex;flex-direction:column;align-items:center;gap:10px}
+  .cell .tag{font-size:10px;letter-spacing:.2em;color:#6d81a6;text-transform:uppercase}
+  .box{border:3px solid var(--ink);box-shadow:0 0 0 2px #3a4763;background:#080B14}
+  .box.x2{transform:scale(2);transform-origin:top center;image-rendering:auto}
+  .spacer{height:250px}
+
+  .panel{width:240px;border:3px solid var(--ink);box-shadow:0 0 0 2px #3a4763;
+         background:linear-gradient(180deg,#101728,#0A0C14);padding:14px}
+  .panel h2{margin:0 0 12px;font-family:"Arial Black",Impact,sans-serif;font-size:15px;
+            transform:skewX(-8deg);text-shadow:2px 2px 0 #FF7A00}
+  label{display:block;font-size:10px;letter-spacing:.14em;color:var(--volt);margin:14px 0 6px}
+  input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:14px;background:transparent}
+  input[type=range]::-webkit-slider-runnable-track{height:14px;background:#1c2438;border:3px solid var(--ink)}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;margin-top:-7px;
+    background:#FF7A00;border:3px solid var(--ink);box-shadow:0 0 0 2px var(--volt);cursor:grab}
+  input[type=range]::-moz-range-track{height:14px;background:#1c2438;border:3px solid var(--ink)}
+  input[type=range]::-moz-range-thumb{width:22px;height:22px;background:#FF7A00;border:3px solid var(--ink)}
+  .btns{display:flex;gap:8px;margin-top:6px}
+  button{flex:1;padding:8px 0;font-family:inherit;font-size:11px;letter-spacing:.1em;cursor:pointer;
+    background:#1c2438;color:var(--paper);border:3px solid var(--ink);box-shadow:inset 0 0 0 1px #34405e}
+  button[aria-pressed="true"]{background:#FF7A00;color:var(--ink);font-weight:bold}
+  button:focus-visible,input:focus-visible{outline:3px solid #33E0FF;outline-offset:3px}
+  .readout{margin-top:14px;font-size:11px;color:#8FA3C4;line-height:1.7}
+  .readout b{color:var(--paper);font-family:"Arial Black",Impact,sans-serif}
+</style>
+</head>
+<body>
+
+  <div class="cell">
+    <div class="box"><div class="thread" id="t1" data-dir="cw" data-run="1"></div></div>
+    <div class="tag">1× · 120×240</div>
+  </div>
+
+  <div class="cell">
+    <div class="box x2"><div class="thread" id="t2" data-dir="cw" data-run="1"></div></div>
+    <div class="spacer"></div>
+    <div class="tag" style="margin-top:-230px">2× 放大检视</div>
+  </div>
+
+  <div class="panel">
+    <h2>ネジ駆動 / DRIVE</h2>
+
+    <label for="rpm">转速 RPM</label>
+    <input id="rpm" type="range" min="20" max="900" step="10" value="180">
+
+    <label>方向 DIRECTION</label>
+    <div class="btns">
+      <button id="cw"  aria-pressed="true">正转 拧紧</button>
+      <button id="ccw" aria-pressed="false">反转 退出</button>
+    </div>
+
+    <div class="btns" style="margin-top:8px">
+      <button id="run" aria-pressed="true">运行 / 停止</button>
+    </div>
+
+    <div class="readout">
+      转速 <b id="oRpm">180</b> rpm<br>
+      导程 <b>13</b> px / 转<br>
+      表观线速 <b id="oVel">78</b> px/s
+    </div>
+  </div>
+
+<script>
+/* ============================================================
+   螺纹组件：一根等径螺杆的侧面图。
+   螺旋线沿 y 每转前进 PITCH，所以整组图形向下平移
+   正好一个 PITCH 时与原图重合 —— 平移动画即等价于旋转。
+   ============================================================ */
+function buildThread(el, opt){
+  const o = Object.assign({
+    w:120, h:240, cx:60, amp:40, pitch:13, depth:3.5, wire:11,
+    turns:26, tipTop:190, tipY:236, steps:2800
+  }, opt||{});
+
+  const NS='http://www.w3.org/2000/svg';
+  const left = o.cx - o.amp - o.wire/2 - 2;
+  const right= o.cx + o.amp + o.wire/2 + 2;
+  // 螺杆轮廓：矩形 + 下端锥尖
+  const body = `M${left},-12 L${right},-12 L${right},${o.tipTop} L${o.cx},${o.tipY} L${left},${o.tipTop} Z`;
+
+  // --- 螺旋线取点，起点抬高一个导程，保证平移时上方不露空 ---
+  const y0 = -o.pitch*2;
+  const total = o.turns*Math.PI*2;
+  const back=[], front=[];
+  let cur=null, sign=null;
+  for(let i=0;i<=o.steps;i++){
+    const t = i/o.steps*total;
+    const x = o.cx + o.amp*Math.sin(t);
+    const y = y0 + (t/(Math.PI*2))*o.pitch + o.depth*Math.cos(t);
+    const s = Math.cos(t) >= 0 ? 1 : -1;
+    if(s!==sign){
+      if(cur && cur.length>1) (sign===1?front:back).push(cur);
+      cur = cur && cur.length ? [cur[cur.length-1]] : [];
+      sign = s;
+    }
+    cur.push([x,y]);
+  }
+  if(cur && cur.length>1) (sign===1?front:back).push(cur);
+
+  const d = p => 'M'+p.map(q=>q[0].toFixed(1)+','+q[1].toFixed(1)).join('L');
+  const path=(dd,st,w,op)=>`<path d="${dd}" fill="none" stroke="${st}" stroke-width="${w}"
+      stroke-linecap="round" stroke-linejoin="round"${op?` opacity="${op}"`:''}/>`;
+
+  let coils='';
+  for(const s of back)  coils += path(d(s),'#0A0C14',o.wire+4);
+  for(const s of back)  coils += path(d(s),'url(#thrBack)',o.wire);
+  for(const s of front) coils += path(d(s),'#0A0C14',o.wire+4);
+  for(const s of front) coils += path(d(s),'url(#thrFront)',o.wire);
+
+  el.innerHTML = `
+  <svg viewBox="0 0 ${o.w} ${o.h}" xmlns="${NS}" aria-hidden="true">
+    <defs>
+      <linearGradient id="thrFront" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0"    stop-color="#FF8A2B"/>
+        <stop offset="1"    stop-color="#E86A00"/>
+      </linearGradient>
+      <linearGradient id="thrBack" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0"   stop-color="#5A2E00"/>
+        <stop offset="1"   stop-color="#3A1B00"/>
+      </linearGradient>
+      <linearGradient id="thrCore" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0"   stop-color="#2A1400"/>
+        <stop offset=".5"  stop-color="#54290A"/>
+        <stop offset="1"   stop-color="#1A0C00"/>
+      </linearGradient>
+      <clipPath id="thrClip"><path d="${body}"/></clipPath>
+    </defs>
+
+    <path d="${body}" fill="url(#thrCore)"/>
+    <g clip-path="url(#thrClip)"><g class="spin">${coils}</g></g>
+    <path d="${body}" fill="none" stroke="#0A0C14" stroke-width="5" stroke-linejoin="round"/>
+  </svg>`;
+}
+
+const t1=document.getElementById('t1'), t2=document.getElementById('t2');
+buildThread(t1); buildThread(t2);
+
+/* ---- demo controls ---- */
+const rpm=document.getElementById('rpm'), oRpm=document.getElementById('oRpm'), oVel=document.getElementById('oVel');
+const bCW=document.getElementById('cw'), bCCW=document.getElementById('ccw'), bRun=document.getElementById('run');
+const both = fn => [t1,t2].forEach(fn);
+
+function setRpm(v){
+  both(el=>el.style.setProperty('--rpm', v));
+  oRpm.textContent=v; oVel.textContent=Math.round(v/60*13);
+}
+rpm.addEventListener('input',()=>setRpm(rpm.value));
+
+function setDir(dir){
+  both(el=>el.dataset.dir=dir);
+  bCW.setAttribute('aria-pressed', dir==='cw'); bCCW.setAttribute('aria-pressed', dir==='ccw');
+}
+bCW.onclick=()=>setDir('cw'); bCCW.onclick=()=>setDir('ccw');
+
+bRun.onclick=()=>{
+  const on = t1.dataset.run==='1' ? '0' : '1';
+  both(el=>el.dataset.run=on); bRun.setAttribute('aria-pressed', on==='1');
+};
+setRpm(180);
+</script>
+</body>
+</html>
