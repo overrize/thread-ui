@@ -73,6 +73,9 @@ static struct {
     bool  tq_locked;            /* 扭矩锁：防误触。短按解锁，8s 无滚动自动回锁 */
     int64_t tq_activity;        /* 最近一次扭矩调节（解锁/滚动），us */
     bool  at_limit;             /* 扭矩到上限（待接主电调信号，见主循环 TODO） */
+    float tq_feedback;          /* 实时反馈扭矩 Nm（TODO：接主电调 iq×Kt，现为占位 0） */
+    int   batt_pct;             /* 电量 %（TODO：接电量检测，现占位 100） */
+    bool  batt_charging;        /* 充电中（TODO，现占位 false） */
     /* 颜色动画：指数趋近目标色（WouoUI 式，天然可打断，无时间线） */
     uint8_t color_target[3];
     bool  color_anim;
@@ -88,10 +91,12 @@ static struct {
     .precise_torque = 0.10f,
     .rpm_set = {200, 450, 300},
     .tq_locked = true,           /* 上电即锁，防止上手误调 */
+    .batt_pct = 100,
 };
 
 static bool s_trigger;          /* 扳机：接你的握力/开关输入 */
 static bool s_dirty_top = true, s_dirty_scrim = true;   /* UI 区域脏标记 */
+static uint32_t n_top, n_scrim, n_scroll;               /* 重绘/滚动计数（排查用） */
 
 /* TURBO 档的动画基色（螺纹、徽标一起变红） */
 static const uint8_t TURBO_RED[3] = { 0xFF, 0x2D, 0x2D };
@@ -123,23 +128,50 @@ static void start_morph(void)
     S.color_anim = true;
 }
 
+/* 压条显示值：反馈/设定/视图都做指数趋近，数字变化不僵硬 */
+static float s_view_t;          /* 0=平常(反馈大) 1=调节(设定大) */
+static float s_disp_set;        /* 显示中的设定值 */
+static float s_disp_fb;         /* 显示中的反馈值 */
+
 static void draw_scrim(void)
 {
     uint8_t base[3];
     thread_get_base_color(base);
-    if (S.tq_locked) {
-        base[0] = base[1] = base[2] = 90;   /* 扭矩锁定时压条灰显：调不了 */
-    }
-    ui_draw_scrim((int)(current_torque() * 100 + 0.5f), base,
-                  S.mode == MODE_STD && S.std_gear == STD_TURBO_GEAR && !S.tq_locked,
+    ui_draw_scrim((int)(s_disp_set * 100 + 0.5f),
+                  (int)(s_disp_fb * 100 + 0.5f),
+                  s_view_t, base,
+                  S.mode == MODE_STD && S.std_gear == STD_TURBO_GEAR,
                   S.at_limit);
+}
+
+/* 每帧驱动压条动画；返回 true 表示还在动（需要继续重刷） */
+static bool scrim_anim_step(float dt)
+{
+    float k = dt * 10.0f;                   /* 时间常数 ~100ms */
+    if (k > 1.0f) k = 1.0f;
+    bool anim = false;
+
+    float dv = (S.tq_locked ? 0.0f : 1.0f) - s_view_t;
+    if (dv > 0.01f || dv < -0.01f) { s_view_t += dv * k; anim = true; }
+    else if (s_view_t != (S.tq_locked ? 0.0f : 1.0f)) { s_view_t = S.tq_locked ? 0.0f : 1.0f; anim = true; }
+
+    float ds = current_torque() - s_disp_set;
+    if (ds > 0.002f || ds < -0.002f) { s_disp_set += ds * k; anim = true; }
+    else if (s_disp_set != current_torque()) { s_disp_set = current_torque(); anim = true; }
+
+    float df = S.tq_feedback - s_disp_fb;
+    if (df > 0.002f || df < -0.002f) { s_disp_fb += df * k; anim = true; }
+    else if (s_disp_fb != S.tq_feedback) { s_disp_fb = S.tq_feedback; anim = true; }
+
+    return anim;
 }
 
 static void draw_topbar(void)
 {
     uint8_t base[3];
     thread_get_base_color(base);
-    ui_draw_topbar(S.mode, S.rpm_set[S.mode], S.tq_locked, base);
+    ui_draw_topbar(S.mode, S.rpm_set[S.mode], S.tq_locked, base,
+                   S.batt_pct, S.batt_charging);
 }
 
 /* ---------------- 休眠 / 唤醒 ---------------- */
@@ -192,6 +224,7 @@ static void on_wheel(wheel_evt_t e, int d, void *ctx)
 
     switch (e) {
     case WHEEL_SCROLL:
+        n_scroll++;
         if (S.tq_locked) break;             /* 扭矩锁：防误触，滚动直接忽略 */
         if (S.mode == MODE_STD) {
             /* 滚动切挡，一格一挡；进出 TURBO 档触发红/橙渐变 */
@@ -280,11 +313,29 @@ void app_main(void)
     uint32_t frames = 0;
     int64_t fps_window_start = esp_timer_get_time();
     int64_t render_time_us = 0;
+    int64_t body_time_us = 0, body_max_us = 0;      /* 帧耗时仪表（临时排查用） */
 
     while (1) {
         int64_t t_now = esp_timer_get_time();
         float dt = (t_now - t_prev) / 1000000.0f;
         t_prev = t_now;
+
+        /* FPS 统计放在循环最前面：主界面/菜单/休眠都打印，避免进菜单后日志消失 */
+        if (t_now - fps_window_start >= 2 * 1000 * 1000) {
+            float secs = (float)(t_now - fps_window_start) / 1e6f;
+            if (frames > 0) {
+                ESP_LOGI(TAG, "FPS %.1f, render %.2f ms, body avg %.2f max %.2f ms, top %lu scrim %lu scroll %lu",
+                         frames / secs, (float)render_time_us / frames / 1000.0f,
+                         (float)body_time_us / frames / 1000.0f, (float)body_max_us / 1000.0f,
+                         (unsigned long)n_top, (unsigned long)n_scrim, (unsigned long)n_scroll);
+            }
+            frames = 0;
+            render_time_us = 0;
+            body_time_us = 0;
+            body_max_us = 0;
+            n_top = 0; n_scrim = 0; n_scroll = 0;
+            fps_window_start = t_now;
+        }
 
         /* 输入每 ~5ms 采一次：一帧内轮询 3 次 */
         for (int i = 0; i < 3; i++) wheel_poll();
@@ -357,7 +408,13 @@ void app_main(void)
 
         /* --- 菜单态：菜单接管屏幕，螺纹动画停帧 --- */
         if (S.screen == SCR_MENU) {
+            int64_t t0 = esp_timer_get_time();
             menu_draw_if_dirty();
+            render_time_us += esp_timer_get_time() - t0;
+            frames++;
+            int64_t body = esp_timer_get_time() - t_now;
+            body_time_us += body;
+            if (body > body_max_us) body_max_us = body;
             vTaskDelayUntil(&last_wake, period);
             continue;
         }
@@ -374,9 +431,11 @@ void app_main(void)
                 if (d == 0) {
                     nxt[i] = cur[i];
                 } else if (d >= -2 && d <= 2) {
-                    nxt[i] = S.color_target[i];     /* 末段直接到位，避免四舍五入卡死 */
+                    nxt[i] = S.color_target[i];     /* 末段直接到位 */
                 } else {
-                    int v = (int)lroundf((float)cur[i] + (float)d * k);
+                    int step = (int)lroundf((float)d * k);
+                    if (step == 0) step = d > 0 ? 1 : -1;   /* 最小步进：d*k<0.5 时取整为 0 会永远收敛不到 */
+                    int v = (int)cur[i] + step;
                     nxt[i] = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
                     done = false;
                 }
@@ -417,22 +476,13 @@ void app_main(void)
             thread_advance(S.rpm_now, dt, menu_reverse());
         }
 
-        /* --- 出图 --- */
-        int64_t t0 = esp_timer_get_time();
-        thread_render();
-        render_time_us += esp_timer_get_time() - t0;
-        frames++;
-
-        if (t_now - fps_window_start >= 2 * 1000 * 1000) {
-            float secs = (float)(t_now - fps_window_start) / 1e6f;
-            ESP_LOGI(TAG, "FPS %.1f, avg render+push %.2f ms",
-                     frames / secs, (float)render_time_us / frames / 1000.0f);
-            frames = 0;
-            render_time_us = 0;
-            fps_window_start = t_now;
+        /* 压条动画驱动（反馈/设定/视图趋近），动的时候持续重刷 */
+        if (scrim_anim_step(dt)) {
+            s_dirty_scrim = true;
         }
 
-        /* 状态条和压条：脏矩形刷新；颜色动画期间每帧重刷 */
+        /* 状态条和压条：先刷小区域（短 DMA），动画区（长 DMA）最后刷，
+         * 小 DMA 的传输时间正好盖住后续 CPU 合成，等待不串行叠加 */
         if (S.color_anim) {
             s_dirty_top = true;
             s_dirty_scrim = true;
@@ -440,10 +490,25 @@ void app_main(void)
         if (s_dirty_top) {
             draw_topbar();
             s_dirty_top = false;
+            n_top++;
         }
         if (s_dirty_scrim) {
             draw_scrim();
             s_dirty_scrim = false;
+            n_scrim++;
+        }
+
+        /* --- 出图 --- */
+        int64_t t0 = esp_timer_get_time();
+        thread_render();
+        render_time_us += esp_timer_get_time() - t0;
+        frames++;
+
+        /* 帧主体耗时（含渲染、脏矩形重绘、输入处理），用于定位掉帧 */
+        {
+            int64_t body = esp_timer_get_time() - t_now;
+            body_time_us += body;
+            if (body > body_max_us) body_max_us = body;
         }
 
         vTaskDelayUntil(&last_wake, period);

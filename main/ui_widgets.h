@@ -2,13 +2,15 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* 状态条：模式徽标 | 转速 | 电量。locked 时整体灰显 */
-void ui_draw_topbar(int mode, int rpm, bool locked, const uint8_t base[3]);
+/* 状态条：模式徽标 | 转速 | 电量。locked 时徽标/转速灰显；
+ * 电量按百分比填充，颜色规则：充电绿 / <15% 红 / <50% 黄 / 其余白 */
+void ui_draw_topbar(int mode, int rpm, bool locked, const uint8_t base[3],
+                    int batt_pct, bool batt_charging);
 
-/* 压条：扭矩大数字（torque_x100 = 扭矩×100）+ 单位，颜色跟随模式基色。
- * turbo=true 时数字改红色（STD 第四档 TURBO）；
- * at_limit=true 时整个压条改为红色 "MAX" 印章（扭矩到上限，不是"到位"） */
-void ui_draw_scrim(int torque_x100, const uint8_t base[3], bool turbo, bool at_limit);
+/* 压条：反馈扭矩大数字 + 设定值小字（上方）；view_t=1 时设定值放大为主位。
+ * view_t 由上层趋近驱动；turbo 设定值红色；at_limit 显示 MAX 印章 */
+void ui_draw_scrim(int set_x100, int fb_x100, float view_t,
+                   const uint8_t base[3], bool turbo, bool at_limit);
 
 /* 休眠屏：整屏暗色，居中显示时钟 "HH:MM"（RTC），下方电量占位框（电量待接硬件） */
 void ui_draw_sleep(const char *clock_text);

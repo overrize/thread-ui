@@ -201,9 +201,20 @@ void ui_text_vertical(float x, float y, const char *str, float size, uint16_t co
 
 static const char *const MODE_TAG[3] = { "PRE", "STD", "RCH" };
 
-/* 状态条：模式徽标 | 转速 | 电量 */
-void ui_draw_topbar(int mode, int rpm, bool locked, const uint8_t base[3])
+/* 电量颜色规则：充电绿；<15% 红；<50% 黄；其余白 */
+static void batt_rgb(int pct, bool charging, uint8_t *r, uint8_t *g, uint8_t *b)
 {
+    if (charging)      { *r = 60;  *g = 220; *b = 100; }
+    else if (pct < 15) { *r = 255; *g = 60;  *b = 60;  }
+    else if (pct < 50) { *r = 255; *g = 200; *b = 40;  }
+    else               { *r = 240; *g = 240; *b = 240; }
+}
+
+/* 状态条：模式徽标 | 转速 | 电量（颜色按电量规则，填充宽度=电量百分比） */
+void ui_draw_topbar(int mode, int rpm, bool locked, const uint8_t base[3],
+                    int batt_pct, bool batt_charging)
+{
+    disp_wait_done();                           /* 先等上一笔 DMA 完成，再改写缓冲 */
     s_buf = s_top; s_bw = DISP_W; s_bh = DISP_BAR_H;
     memset(s_top, 0, sizeof(s_top));
 
@@ -224,22 +235,43 @@ void ui_draw_topbar(int mode, int rpm, bool locked, const uint8_t base[3])
     num[n] = '\0';
     text_aa_right(92, 2, num, 9.0f, locked ? c_dim : 0x7BEF);
 
-    /* 电量框（静态，等接电量检测后更新） */
-    uint16_t bat = rgb565be(140, 140, 140);
+    /* 电量：框 + 按百分比填充；白/绿(充电)/黄(<50%)/红(<15%) */
+    uint8_t br, bg, bb;
+    batt_rgb(batt_pct, batt_charging, &br, &bg, &bb);
+    uint16_t bat = rgb565be(br, bg, bb);
     for (int x = 102; x <= 114; x++) { put_px(x, 3, bat); put_px(x, 10, bat); }
     for (int y = 3; y <= 10; y++) { put_px(102, y, bat); put_px(114, y, bat); }
     put_px(115, 5, bat); put_px(115, 6, bat); put_px(115, 7, bat); put_px(115, 8, bat);
-    uint16_t fill = rgb565be(base[0], base[1], base[2]);
+    if (batt_pct < 0) batt_pct = 0;
+    if (batt_pct > 100) batt_pct = 100;
+    int fillw = batt_pct * 9 / 100;             /* 内腔 x 104..112 共 9px */
     for (int y = 5; y <= 8; y++)
-        for (int x = 104; x <= 112; x++) put_px(x, y, fill);
+        for (int x = 104; x < 104 + fillw; x++) put_px(x, y, bat);
 
     disp_blit(0, 0, DISP_W, DISP_BAR_H, s_top);
-    disp_wait_done();
 }
 
-/* 压条：扭矩大数字 + 单位；turbo 红字；at_limit 显示 MAX 印章 */
-void ui_draw_scrim(int torque_x100, const uint8_t base[3], bool turbo, bool at_limit)
+/* 数字按 "x.xx" 格式化（整数部分恒为一位；负数/超界钳到 0.00~9.99） */
+static void fmt_x100(char buf[6], int v)
 {
+    if (v < 0) v = 0;
+    if (v > 999) v = 999;
+    buf[4] = '\0';
+    buf[3] = '0' + (v % 10); v /= 10;
+    buf[2] = '0' + (v % 10); v /= 10;
+    buf[1] = '.';
+    buf[0] = '0' + (v % 10);
+}
+
+/* 压条双态布局（view_t 由上层做趋近动画）：
+ *   view_t=0 平常：白色反馈扭矩大数字在主位，设定上限在顶部条带(14px)
+ *   view_t=1 调节：设定上限放大到主位，反馈缩小上浮到条带，两者换位
+ *   单位 N.M 加大为 13px，颜色跟随主位（白 <-> 设定色）
+ * turbo 时设定值红色；at_limit 时整个压条改 MAX 印章 */
+void ui_draw_scrim(int set_x100, int fb_x100, float view_t,
+                   const uint8_t base[3], bool turbo, bool at_limit)
+{
+    disp_wait_done();                           /* 先等上一笔 DMA 完成，再改写缓冲 */
     s_buf = s_scrim; s_bw = DISP_W; s_bh = DISP_SCRIM_H;
     memset(s_scrim, 0, sizeof(s_scrim));
 
@@ -256,25 +288,34 @@ void ui_draw_scrim(int torque_x100, const uint8_t base[3], bool turbo, bool at_l
         }
         text_aa_centered(60.0f, 13.0f, "MAX", 16.0f, 0xF926);
     } else {
-        /* 数字按 "x.xx" 格式化（整数部分恒为一位） */
         char buf[6];
-        int v = torque_x100;
-        buf[4] = '\0';
-        buf[3] = '0' + (v % 10); v /= 10;
-        buf[2] = '0' + (v % 10); v /= 10;
-        buf[1] = '.';
-        buf[0] = '0' + (v % 10);
+        /* 设定色：模式基色，TURBO 红 */
+        uint8_t sr = turbo ? 255 : base[0];
+        uint8_t sg = turbo ? 73  : base[1];
+        uint8_t sb = turbo ? 38  : base[2];
+        uint16_t c_set = (uint16_t)(((sr & 0xF8) << 8) | ((sg & 0xFC) << 3) | (sb >> 3));
 
-        uint16_t c_num = turbo ? 0xF926                       /* TURBO 红 */
-                               : (uint16_t)(((base[0] & 0xF8) << 8) | ((base[1] & 0xFC) << 3) | (base[2] >> 3));
-        /* 屏幕底部 ~6 行被模组外壳遮挡，压条内容上移；
-         * 大数字左移，单位竖放在数字右侧（从下往上读） */
-        text_aa_centered(53.0f, 0, buf, 28.0f, c_num);
-        ui_text_vertical(100, 5, "N.M", 9.0f, 0x52AA);
+        /* 设定上限：顶部条带(16px) <-> 主位大数字(28px)。
+         * 左对齐 x=13 = 大数字左缘，换位时只有字号/纵向移动，无横向跳变 */
+        fmt_x100(buf, set_x100);
+        text_aa(13.0f, 2.0f + 22.0f * view_t, buf, 16.0f + 12.0f * view_t, c_set);
+
+        /* 实时反馈扭矩：白色，28px 占满主位(y24..52) <-> 顶部条带 */
+        fmt_x100(buf, fb_x100);
+        text_aa(13.0f, 24.0f - 22.0f * view_t, buf, 28.0f - 12.0f * view_t, 0xFFFF);
+
+        /* 单位：颜色跟随主位（白 -> 设定色，随 view_t 插值） */
+        uint8_t ur = (uint8_t)(255 + ((int)sr - 255) * view_t);
+        uint8_t ug = (uint8_t)(255 + ((int)sg - 255) * view_t);
+        uint8_t ub = (uint8_t)(255 + ((int)sb - 255) * view_t);
+        uint16_t c_unit = (uint16_t)(((ur & 0xF8) << 8) | ((ug & 0xFC) << 3) | (ub >> 3));
+        /* 竖放（从下往上读），与大数字同高区间；屏幕底部 ~6 行被外壳遮挡，内容上移 */
+        ui_text_vertical(103, 22, "N.M", 13.0f, c_unit);
     }
 
     disp_blit(0, DISP_SCRIM_Y, DISP_W, DISP_SCRIM_H, s_scrim);
-    disp_wait_done();
+    /* 注意：不在末尾 wait —— 约定下一笔绘制的开头统一 disp_wait_done()，
+     * 每笔 blit 恰好配一次等待，多等一次会让等待方空转 100ms 超时 */
 }
 
 /* 休眠屏：整屏暗色，时钟 + 电量占位框 */
@@ -284,6 +325,7 @@ void ui_draw_sleep(const char *clock_text)
     if (!s_sleep) s_sleep = disp_alloc(DISP_W * DISP_H * 2);
     if (!s_sleep) return;
 
+    disp_wait_done();                           /* 先等上一笔 DMA 完成，再改写缓冲 */
     ui_buf_select(s_sleep, DISP_W, DISP_H);
     memset(s_sleep, 0, DISP_W * DISP_H * 2);
 
@@ -296,5 +338,4 @@ void ui_draw_sleep(const char *clock_text)
     put_px(72, 143, bat); put_px(72, 144, bat); put_px(72, 147, bat); put_px(72, 148, bat);
 
     disp_blit(0, 0, DISP_W, DISP_H, s_sleep);
-    disp_wait_done();
 }

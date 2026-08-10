@@ -5,17 +5,17 @@
 
 /* ---- 屏幕分区（和 HTML 原型一致） ----
  *   0  .. 13   状态条：模式 / 转速 / 电量        —— 变化时才刷
- *  14  .. 195  螺纹动画区                        —— 每帧刷
- * 196  .. 239  底部压条：扭矩大数字              —— 变化时才刷
+ *  14  .. 185  螺纹动画区                        —— 每帧刷
+ * 186  .. 239  底部压条：反馈扭矩大数字 + 设定上限条带 —— 变化时才刷
  */
 #define DISP_W        120
 #define DISP_H        240
 
 #define DISP_BAR_H     14
 #define DISP_ANIM_Y    14
-#define DISP_ANIM_H   182
-#define DISP_SCRIM_Y  196
-#define DISP_SCRIM_H   44
+#define DISP_ANIM_H   172
+#define DISP_SCRIM_Y  186
+#define DISP_SCRIM_H   54
 
 /* 螺纹贴图：一个牙距高，纵向无限重复 */
 #define TILE_H         17

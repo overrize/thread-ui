@@ -61,6 +61,9 @@ static bool on_trans_done(esp_lcd_panel_io_handle_t io,
 esp_err_t disp_init(void)
 {
     s_done = xSemaphoreCreateBinary();
+    /* 约定：所有绘制函数在【改写缓冲前】调 disp_wait_done() 等上一笔 DMA 完成，
+     * 而不是推完再等。预给一次信号量，让第一个等待者不会空等 100ms。 */
+    xSemaphoreGive(s_done);
 
     spi_bus_config_t bus = {
         .sclk_io_num = PIN_SCLK,

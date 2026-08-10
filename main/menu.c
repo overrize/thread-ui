@@ -133,6 +133,7 @@ static const item_t *cur_items(int *count)
 /* ---- 绘制 ---- */
 static void menu_render(void)
 {
+    disp_wait_done();       /* 先等上一笔 DMA 完成，再改写整屏缓冲（否则黑屏/漏字） */
     memset(s_fb, 0, sizeof(s_fb));
     ui_buf_select(s_fb, DISP_W, DISP_H);
 
@@ -208,7 +209,6 @@ static void menu_render(void)
     }
 
     disp_blit(0, 0, DISP_W, DISP_H, s_fb);
-    disp_wait_done();
 }
 
 /* ---- 对外接口 ---- */
