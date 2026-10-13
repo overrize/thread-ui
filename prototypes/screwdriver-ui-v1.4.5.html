@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QuantDriver AMOLED 演示</title>
+<style>
+:root{--font:"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:radial-gradient(120% 90% at 50% 0%,#15161A,#000 70%);
+  color:#E8E8EC;font-family:var(--font);padding:24px 16px 70px;
+  display:flex;flex-direction:column;align-items:center;gap:22px}
+.ctl{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+button{font-family:inherit;font-size:12px;padding:9px 15px;border-radius:10px;cursor:pointer;
+  background:#1C1C1E;color:#D8D8DC;border:1px solid #2C2C2E}
+button:hover{background:#232326}
+button[aria-pressed="true"]{background:#F2F2F4;color:#000;font-weight:700}
+#trig{background:linear-gradient(180deg,#FF8A2B,#E05F00);color:#180800;font-weight:700;border-color:#000}
+.grid{display:flex;flex-wrap:wrap;gap:28px;justify-content:center}
+.v{display:flex;flex-direction:column;align-items:center;gap:10px;width:260px}
+.v h3{margin:0;font-size:13px;font-weight:700}
+.v p{margin:0;font-size:11px;color:#6A6A72;line-height:1.65;text-align:left}
+.shell{padding:12px;border-radius:28px;background:linear-gradient(180deg,#2A2B2F,#161719);
+  box-shadow:0 1px 0 rgba(255,255,255,.14) inset,0 20px 40px rgba(0,0,0,.55)}
+canvas{display:block;background:#000}
+</style>
+</head>
+<body>
+
+<div class="ctl" id="sl" style="gap:16px;font-size:12px;color:#9A9AA2">
+  <label>格数 <input data-k="n" type="range" min="9" max="21" step="2" value="15"> <b id="v_n">15</b></label>
+  <label>格宽占比 <input data-k="duty" type="range" min="40" max="85" value="62"> <b id="v_duty">0.62</b></label>
+  <label>弧面角 <input data-k="arc" type="range" min="35" max="78" value="60"> <b id="v_arc">0.60</b></label>
+  <label>底托明度 <input data-k="back" type="range" min="15" max="80" value="45"> <b id="v_back">0.45</b></label>
+  <label>底托去色 <input data-k="desat" type="range" min="0" max="100" value="50"> <b id="v_desat">0.50</b></label>
+  <label>空格明度 <input data-k="off" type="range" min="20" max="90" value="60"> <b id="v_off">0.60</b></label>
+  <label>高度 <input data-k="h" type="range" min="20" max="48" value="36"> <b id="v_h">36</b></label>
+</div>
+<div class="ctl">
+  <button id="auto" aria-pressed="true">自动演示 开</button>
+  <span style="font-size:12px;color:#9A9AA2;margin-left:6px">尺寸</span>
+  <button class="sz" data-s="1" aria-pressed="true" title="1 个设备像素 = 1 个浏览器像素">1×</button>
+  <button class="sz" data-s="2" title="像素放大 2 倍，看细节">2×</button>
+  <button class="sz" data-s="real" title="按 1.58&quot; 面板的物理尺寸显示（约 17.8 × 36.0 mm），需用银行卡校准">真实尺寸 1.58"</button>
+  <span style="font-size:12px;color:#9A9AA2;margin-left:6px">帧率</span>
+  <button class="fps" data-f="0" aria-pressed="true" title="每次显示器刷新都推进一帧：144Hz 屏上最顺">跟随显示器</button>
+  <button class="fps" data-f="30">30</button>
+  <button class="fps" data-f="60" title="模拟真机 60fps。在 144Hz 显示器上会 2/3 帧交替停留，看起来发顿、有重影 —— 真机不会">真机 60</button>
+  <button class="fps" data-f="72">72</button>
+  <button class="fps" data-f="90">90</button>
+  <button class="fps" data-f="120">120</button>
+  <button class="fps" data-f="144">144</button>
+</div>
+<div class="ctl" style="font-size:12px;color:#9A9AA2;gap:14px">
+  <label>动画速度 <input id="spd" type="range" min="30" max="100" value="100"> <b id="spdv">1.00×</b></label>
+  <button id="calm" aria-pressed="false">减少动态 关</button>
+  <span>显示</span>
+  <button class="view" data-v="-1">四个并排</button>
+  <button class="view" data-v="0">精密</button>
+  <button class="view" data-v="1" aria-pressed="true">标准</button>
+  <button class="view" data-v="2">棘轮</button>
+  <button class="view" data-v="3">TURBO</button>
+</div>
+<div class="ctl"><span id="info" style="font-size:11px;color:#6A6A72"></span>
+  <button id="trig">按住 = 运转</button>
+  <button id="bStyle">风格 · A 实色</button>
+  <button id="bDir">旋向 · 正转 拧紧</button>
+</div>
+
+<div class="ctl" id="calib" style="display:none;flex-direction:column;gap:10px;font-size:12px;color:#9A9AA2">
+  <div>校准：把一张实体银行卡贴在屏幕上，拖滑杆让下面的框和卡<b style="color:#E8E8EC">一样宽</b>（85.60 × 53.98 mm）。只需校一次，本浏览器会记住。</div>
+  <div style="display:flex;gap:12px;align-items:center;justify-content:center">
+    <input id="mmk" type="range" min="50" max="200" value="100" style="width:260px"> <b id="mmkv">1.00</b>
+    <span id="ppiv" style="color:#6A6A72"></span>
+  </div>
+  <div id="card" style="border:1.5px dashed #F28E4A;border-radius:3.2mm;margin:0 auto;display:flex;align-items:center;justify-content:center;color:#6A6A72">银行卡</div>
+</div>
+<div class="grid" id="grid"></div>
+
+<script>
+/* ============================== 面板与转子（与 copper-228x460 一致） ============================== */
+const W=228,H=460,BAR_H=26,INSET=20,CORNER=16;
+/* v1.2：转子只在中间一个窗口里转，上下是纯黑的文字区 —— 字更大，动的面积更小 */
+const ROT_Y0=90, ROT_Y1=336, ROT_FADE=12;   /* v1.4：转速一行在上，扭矩大号在下 */
+const CX=W/2, CY=(ROT_Y0+ROT_Y1)/2;
+const R=110, D=164.3, F=70.6*1.9, Z0=D-R, Z_EDGE=D-R*R/D;
+const SLOTS=12, PITCH=Math.PI*2/SLOTS, SF=0.24, STRIPE=1.4, SKEW=0.0022, DOF_MAX=6;
+/* ---- 防晃眼（v1.1.0） ----
+ * 1) 每帧位移封顶 MAX_STEP 个槽距（<0.5 才不会倒转/频闪；取 0.25 留足余量）
+ * 2) 转速 → 显示角速度用幂次压缩：三档仍拉得开，但谁都不越顶
+ * 3) 曝光拖影：模糊窗口 = 本帧位移 × PERSIST，速度越高条纹越"化开"，对比度自然降下来
+ * 4) 绕线条纹、亮边、高光都降对比 */
+const MAX_STEP=0.12, WIRE_LO=0.92, RPM_REF=900, RPM_GAMMA=0.6;   /* v1.2：0.12 槽距/帧 ≈ 中心 3.5px/帧，眼睛能平滑跟随 */
+const cl=(v,a,b)=>v<a?a:(v>b?b:v), fr=v=>v-Math.floor(v);
+const wrapPi=a=>((a+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI;
+
+/* 四个模式。背景永远是铜色（色相约 22°），所以模式色全部避开橙 / 琥珀一带：
+ *   精密 冰蓝 · 标准 铜色（与机体同色，靠底托区分）· 棘轮 绿 · TURBO 品红 */
+const MODES=[
+  {name:'精密', c:[0x38,0xBD,0xFF],tq:0.35,tqMax:1.00,rpm:200,rpmMax:300},
+  {name:'标准', c:[0xF2,0x8E,0x4A],tq:1.20,tqMax:3.00,rpm:450,rpmMax:900},   /* 铜色：比转子本体更亮更饱和，靠灰底托和它分开 */
+  {name:'棘轮', c:[0x4B,0xE0,0x8A],tq:2.40,tqMax:3.00,rpm:0,  rpmMax:0},
+  {name:'TURBO',c:[0xFF,0x3B,0x7A],tq:3.00,tqMax:3.00,rpm:900,rpmMax:900,turbo:true},
+];
+let S={mode:1,rpm:0,theta:0,load:0,torque:0,done:0,clicks:0,
+  col:MODES[1].c.slice(),colFrom:MODES[1].c.slice(),colT:1,ratT:0};
+let manual=false, auto=true, demoT=0;
+
+function hit(t){const A=t*t+1,disc=D*D-A*(D*D-R*R);if(disc<0)return null;
+  const s=(D-Math.sqrt(disc))/A;return{a:Math.atan2(s*t,D-s),s};}
+const COLS=[];
+for(let x=0;x<W;x++){const t=(x+0.5-CX)/F,h=hit(t),h2=hit(t+1/F);
+  if(!h){COLS.push(null);continue;}
+  COLS.push({a:h.a,s:h.s,dadx:h2?Math.abs(wrapPi(h2.a-h.a)):.2,
+    lum:0.20+0.80*Math.pow(Math.max(0,Math.cos(h.a+0.32)),0.85),
+    spec:Math.pow(Math.max(0,Math.cos(h.a+0.12)),22)*0.18,
+    blur:Math.max(0,(h.s-Z0)/(Z_EDGE-Z0))*DOF_MAX,
+    fall:1-0.40*cl((h.s-Z0)/(Z_EDGE-Z0),0,1)});}
+
+function shadeRotor(x,sy,th){
+  const C=COLS[x],gc=S.col; if(!C)return[4,4,6];
+  const wy=sy*C.s/F, p=fr((C.a-th+SKEW*wy)/PITCH);
+  const dpx=Math.min(p,Math.abs(p-SF),1-p)*PITCH/C.dadx, heat=0.85+0.30*S.load;
+  let r,g,b;
+  if(p<SF){const q=p/SF,wall=q<.22?.55:(q>.82?.25:.32);r=48*wall*C.lum;g=26*wall*C.lum;b=16*wall*C.lum;
+    const gl=.30*S.load*Math.sin(q*Math.PI);r+=gc[0]*gl;g+=gc[1]*gl;b+=gc[2]*gl;}
+  else{const wire=fr(wy/STRIPE)<.5?1:WIRE_LO,q=(p-SF)/(1-SF),k=wire*(0.86+0.14*Math.sin(q*Math.PI))*C.lum*heat;
+    r=206*k;g=112*k;b=58*k;}
+  const e=dpx<1.6?1-dpx/1.6:0;
+  if(e>0){if(p>=SF&&p<SF+.12){r+=70*e*C.lum;g+=46*e*C.lum;b+=28*e*C.lum;}else{r*=1-.35*e;g*=1-.35*e;b*=1-.35*e;}}
+  r+=255*C.spec;g+=200*C.spec;b+=160*C.spec;
+  if(MODES[S.mode].turbo){
+    /* TURBO：铜体本身发红。空载就偏红一点，吃上力越来越红、槽缝里透出热光 */
+    const h=0.30+0.45*S.load;                       /* "红一点"：铜色仍可辨，只是明显偏热 */
+    r=r*(1+0.10*h); g=g*(1-0.30*h); b=b*(1-0.22*h);
+    if(p<SF){ const q=p/SF, ember=Math.sin(q*Math.PI)*S.load*0.28; r+=200*ember; g+=40*ember; b+=30*ember; }
+  }
+  return[r*C.fall,g*C.fall,b*C.fall];
+}
+const A=new Float32Array(W*H*3),B=new Float32Array(W*H*3),BG=new ImageData(W,H);
+function renderRotor(){
+  for(let y=BAR_H;y<H;y++){const sy=y+.5-CY;
+    for(let x=0;x<W;x++){const c=shade(x,sy,S.theta),i=(y*W+x)*3;A[i]=c[0];A[i+1]=c[1];A[i+2]=c[2];}}
+  for(let y=BAR_H;y<H;y++)for(let x=0;x<W;x++){const C=COLS[x],rad=C?C.blur:DOF_MAX,ri=Math.ceil(rad);
+    let r=0,g=0,b=0,w=0;for(let k=-ri;k<=ri;k++){const xx=cl(x+k,0,W-1),wt=ri?Math.max(0,1-Math.abs(k)/(rad+1)):1,j=(y*W+xx)*3;
+      r+=A[j]*wt;g+=A[j+1]*wt;b+=A[j+2]*wt;w+=wt;}const i=(y*W+x)*3;B[i]=r/w;B[i+1]=g/w;B[i+2]=b/w;}
+  const d=BG.data;
+  for(let x=0;x<W;x++){const C=COLS[x],rad=C?C.blur:DOF_MAX,ri=Math.ceil(rad);
+    for(let y=0;y<H;y++){const o=(y*W+x)*4;
+      if(y<BAR_H){d[o]=d[o+1]=d[o+2]=0;d[o+3]=255;continue;}
+      let r=0,g=0,b=0,w=0;for(let k=-ri;k<=ri;k++){const yy=cl(y+k,BAR_H,H-1),wt=ri?Math.max(0,1-Math.abs(k)/(rad+1)):1,j=(yy*W+x)*3;
+        r+=B[j]*wt;g+=B[j+1]*wt;b+=B[j+2]*wt;w+=wt;}
+      d[o]=cl(r/w,0,255);d[o+1]=cl(g/w,0,255);d[o+2]=cl(b/w,0,255);d[o+3]=255;}}
+}
+
+/* ============================== 绘制工具 ============================== */
+const CJK_LS=size=>Math.round(size*0.12)+'px';   /* 汉字字距 ≈ 字号 12% */
+const FF='"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif';
+const NF='"SF Pro Display","Helvetica Neue","PingFang SC",Arial,sans-serif';
+/* 只给汉字加字距：按"汉字段 / 其他段"切开分别排，数字和英文不受影响。
+ * 汉字段末尾的字距去掉，保证右对齐时贴边。 */
+function runs(s){ return s.match(/[\u4e00-\u9fff]+|[^\u4e00-\u9fff]+/g)||[]; }
+function measureRuns(g,s,size){
+  let w=0; for(const r of runs(s)){ const cj=/[\u4e00-\u9fff]/.test(r);
+    g.letterSpacing=cj?CJK_LS(size):'0px'; w+=g.measureText(r).width-(cj?parseFloat(CJK_LS(size)):0); }
+  g.letterSpacing='0px'; return w;
+}
+function txt(g,s,x,y,size,color,weight,align){
+  g.textBaseline='alphabetic'; g.textAlign='left';
+  g.font=(weight||'600')+' '+size+'px '+FF; g.fillStyle=color;
+  const w=measureRuns(g,s,size);
+  let cx=align==='right'?x-w:(align==='center'?x-w/2:x);
+  for(const r of runs(s)){ const cj=/[\u4e00-\u9fff]/.test(r);
+    g.letterSpacing=cj?CJK_LS(size):'0px'; g.fillText(r,cx,y);
+    cx+=g.measureText(r).width-(cj?parseFloat(CJK_LS(size)):0); }
+  g.letterSpacing='0px'; return w;
+}
+/* 等宽数字：数字变化时位置不跳。canvas 不支持 tabular-nums，只能逐字摆 */
+function num(g,s,x,y,size,color,align){
+  g.textBaseline='alphabetic'; g.textAlign='left';
+  g.font='800 '+size+'px '+NF; g.fillStyle=color;
+  const adv=g.measureText('0').width;
+  const ws=[...s].map(ch=>/[0-9]/.test(ch)?adv:g.measureText(ch).width);
+  const total=ws.reduce((a,b)=>a+b,0);
+  let cx = align==='right'?x-total:(align==='center'?x-total/2:x);
+  [...s].forEach((ch,i)=>{const cw=g.measureText(ch).width;g.fillText(ch,cx+(ws[i]-cw)/2,y);cx+=ws[i];});
+  return total;
+}
+const accOf=()=>'rgb('+S.col.map(v=>v|0).join(',')+')';
+function scrimBottom(g,y0){const s=g.createLinearGradient(0,y0,0,H);
+  s.addColorStop(0,'rgba(0,0,0,0)');s.addColorStop(.35,'rgba(0,0,0,.70)');s.addColorStop(1,'rgba(0,0,0,.92)');
+  g.fillStyle=s;g.fillRect(0,y0,W,H-y0);}
+function scrimTop(g,y1){const s=g.createLinearGradient(0,BAR_H,0,y1);
+  s.addColorStop(0,'rgba(0,0,0,.85)');s.addColorStop(.6,'rgba(0,0,0,.45)');s.addColorStop(1,'rgba(0,0,0,0)');
+  g.fillStyle=s;g.fillRect(0,BAR_H,W,y1-BAR_H);}
+function track(g,x0,x1,y,h,frac,target){
+  g.fillStyle='rgba(255,255,255,.14)'; g.fillRect(x0,y,x1-x0,h);
+  g.fillStyle=accOf(); g.fillRect(x0,y,(x1-x0)*cl(frac,0,1),h);
+  if(target!=null){const tx=Math.round(x0+(x1-x0)*target); g.fillStyle='#FFFFFF'; g.fillRect(tx-1,y-4,2,h+8);}
+}
+function frame(g){
+  /* 窗沿 + 玻璃 + 状态条 + 圆角，四个方案共用 */
+  const s=g.createLinearGradient(0,0,W,0);
+  s.addColorStop(0,'rgba(0,0,0,.7)');s.addColorStop(.06,'rgba(0,0,0,.15)');s.addColorStop(.12,'rgba(0,0,0,0)');
+  s.addColorStop(.88,'rgba(0,0,0,0)');s.addColorStop(.94,'rgba(0,0,0,.15)');s.addColorStop(1,'rgba(0,0,0,.7)');
+  g.fillStyle=s;g.fillRect(0,BAR_H,W,H-BAR_H);
+  g.globalCompositeOperation='lighter';
+  const gx=g.createLinearGradient(0,BAR_H,W,BAR_H+290);
+  gx.addColorStop(0,'rgba(255,255,255,0)');gx.addColorStop(.32,'rgba(255,255,255,0)');
+  gx.addColorStop(.36,'rgba(210,230,255,.05)');gx.addColorStop(.40,'rgba(255,255,255,0)');
+  g.fillStyle=gx;g.fillRect(0,BAR_H,W,H-BAR_H);
+  g.globalCompositeOperation='source-over';
+}
+function statusBar(g){
+  const M=MODES[S.mode],acc=accOf();
+  g.fillStyle='#0B0B0C';g.fillRect(0,0,W,BAR_H);g.fillStyle='#1C1C1F';g.fillRect(0,BAR_H-1,W,1);
+  g.fillStyle=acc;g.fillRect(INSET,3,50,20);
+  txt(g,M.name,INSET+5,20,20,'#000','700');
+  txt(g,'↻',INSET+58,21,20,'#9A9AA2','700');
+  if(S.done) txt(g,'到位',INSET+84,20,20,acc,'700');
+  g.strokeStyle='#9A9AA2';g.lineWidth=1.5;g.strokeRect(W-INSET-34.5,6.5,30,14);
+  g.fillStyle='#9A9AA2';g.fillRect(W-INSET-32,9,20,9);g.fillRect(W-INSET-4,10,2,7);
+}
+function corners(g){g.save();g.fillStyle='#000';g.beginPath();g.rect(0,0,W,H);g.roundRect(0,0,W,H,CORNER);g.fill('evenodd');g.restore();}
+
+const DIM='#7A8292', DIMMER='#565C68';
+const L=INSET, Rx=W-INSET;
+const rpmStr=()=>String(Math.round(Math.abs(S.rpm)));
+const isRat=()=>MODES[S.mode].rpmMax===0;
+
+/* ============================== 双向：拧紧 / 松出 ==============================
+ * 正转（拧紧）：扭矩爬升到目标 → 到位
+ * 反转（松出）：扭矩先冲到"破坏扭矩"峰值，螺丝一松动就掉下来，转速随之上升
+ *   所以反向没有"目标"，取而代之的是峰值保持 —— 松出时真正有用的读数
+ */
+S.rev=false; S.peak=0; S.rt=0;
+const S0=JSON.parse(JSON.stringify(S));
+function mkState(k){const t=JSON.parse(JSON.stringify(S0));
+  t.mode=k; t.col=MODES[k].c.slice(); t.colFrom=t.col.slice(); t.colT=1; t._wasOn=false; return t;}
+const dirSign=()=>S.rev?-1:1;
+
+function statusBar(g){
+  const M=MODES[S.mode],acc=accOf();
+  g.fillStyle='#0B0B0C';g.fillRect(0,0,W,BAR_H);g.fillStyle='#1C1C1F';g.fillRect(0,BAR_H-1,W,1);
+  const cw=Math.ceil(txtWidth(g,M.name,M.turbo?17:20,'800'))+10;
+  g.fillStyle=acc;g.fillRect(INSET,3,cw,20);
+  txt(g,M.name,INSET+5,M.turbo?19:20,M.turbo?17:20,'#000','800');
+  txt(g,S.rev?'↺':'↻',INSET+cw+8,21,20,S.rev?'#FFFFFF':'#9A9AA2','700');
+  if(S.done) txt(g,'到位',INSET+cw+34,20,20,acc,'700');
+  g.strokeStyle='#9A9AA2';g.lineWidth=1.5;g.strokeRect(W-INSET-34.5,6.5,30,14);
+  g.fillStyle='#9A9AA2';g.fillRect(W-INSET-32,9,20,9);g.fillRect(W-INSET-4,10,2,7);
+}
+
+
+/* 数字宽度（等宽数字逐字摆，和 num() 一致） */
+function numWidth(g,s,size){
+  g.font='800 '+size+'px '+NF; const adv=g.measureText('0').width;
+  return [...s].reduce((w,ch)=>w+(/[0-9]/.test(ch)?adv:g.measureText(ch).width),0);
+}
+function fitNum(g,s,size,maxW){ let z=size; while(z>24&&numWidth(g,s,z)>maxW) z-=2; return z; }
+function txtWidth(g,s,size,weight){ g.font=(weight||'600')+' '+size+'px '+FF; return measureRuns(g,s,size); }
+/* 数字 + 单位：单位放在"最宽可能值"之后的固定列上，保证间距；放不下就整体缩字号。
+ * 数字怎么跳，单位都不动，也永远不会撞上。 */
+function numUnit(g,str,widest,x,y,size,color,unit,uSize,uColor,maxRight,gap){
+  gap=gap||12;
+  let sz=size;
+  while(sz>24 && x+numWidth(g,widest,sz)+gap+txtWidth(g,unit,uSize,'700')>maxRight) sz-=2;
+  num(g,str,x,y,sz,color);
+  txt(g,unit,x+numWidth(g,widest,sz)+gap,y,uSize,uColor,'700');
+}
+/* 方案 1 的文字骨架；方向写进标签行 */
+function base(g,o){
+  const M=MODES[S.mode];
+  /* v1.4：转速压成一行 ——「转速  450 rpm …… 上限 900」，只占状态条下 ~60px */
+  const ly=o.rpmY;
+  /* 不写"转速"两个字：rpm 单位已说明一切；棘轮写"分度 N 格" */
+  let x0=L-1;
+  if(isRat()) x0+=txt(g,'分度',L,ly,18,DIM,'600')+10;
+  const widest=isRat()?'888':String(M.rpmMax).replace(/./g,'8');
+  num(g,isRat()?String(S.clicks):rpmStr(),x0,ly,o.rpmSize,'#E4E6EB');
+  txt(g,isRat()?'格':'rpm',x0+numWidth(g,widest,o.rpmSize)+8,ly,16,DIM,'700');
+  if(!isRat()) txt(g,'上限 '+M.rpmMax,Rx,ly,15,DIMMER,'600','right');
+  const tl=o.tqLabY||364;
+  /* 「拧紧扭矩 / 松出扭矩」：方向字用模式色（松出白），比"扭矩 · 拧紧"短，给右侧上限 + 单位留位置 */
+  const lw=txt(g,'扭矩',L,tl,18,DIM,'600');
+  const dw=txt(g,'·',L+lw+6,tl,18,DIMMER,'700');
+  txt(g,S.rev?'松出':'拧紧',L+lw+dw+12,tl,18,S.rev?'#FFFFFF':accOf(),'700');
+  const uw=0;   /* 单位跟在数字后面 */
+  const showPeak=S.rev&&S.peak>0&&!(S.relRev!==undefined&&nowT-S.relRev>PEAK_SHOW);
+  if(showPeak){
+    /* 松出：右侧换成"峰值"，和条上的空心框对应 —— 松这颗螺丝最大用了多少力 */
+    const pw=txt(g,S.peak.toFixed(2),Rx-uw,tl,16,'#FFFFFF','800','right');
+    txt(g,'峰值',Rx-uw-pw-8,tl,16,DIM,'600','right');
+  }
+  else if(M.turbo) txt(g,'满 '+M.tqMax.toFixed(2),Rx-uw,tl,16,accOf(),'800','right');
+  else txt(g,'上限 '+M.tqMax.toFixed(2),Rx-uw,tl,16,DIMMER,'600','right');
+  if(!M.turbo){
+    numUnit(g,S.torque.toFixed(2),'8.88',L-3,o.tqY,o.tqSize,'#FFFFFF','N·m',22,'#A8AFBC',Rx+4,8);
+    return;
+  }
+  /* TURBO：数字更大、前倾（像在冲）、带模式色辉光；负载越大辉光越强，接近满扭矩时数字本身发热泛红 */
+  const acc=accOf(), k=S.torque/M.tqMax;
+  const hot='rgb(255,'+Math.round(255-95*k*k)+','+Math.round(255-110*k*k)+')';
+  g.save();
+  g.translate(L,o.tqY); g.transform(1,0,-0.12,1,0,0); g.translate(-L,-o.tqY);   /* 前倾 */
+  g.shadowColor=acc; g.shadowBlur=6+16*S.load;
+  numUnit(g,S.torque.toFixed(2),'8.88',L-3,o.tqY,o.tqSize,hot,'N·m',22,'#C9B8C0',Rx,8);
+  g.shadowBlur=0;
+  g.restore();
+  /* 底下一道速度线：随负载拉长，强调"出力" */
+  const lw2=(Rx-L)*(0.25+0.75*S.load);
+  const gr=g.createLinearGradient(L,0,L+lw2,0);
+  gr.addColorStop(0,acc); gr.addColorStop(1,'rgba(0,0,0,0)');
+  
+}
+
+const accA=o=>'rgba('+(S.col[0]|0)+','+(S.col[1]|0)+','+(S.col[2]|0)+','+o+')';
+const sFrac=()=>dirSign()*cl(S.torque/MODES[S.mode].tqMax,0,1);
+const sRpm =()=>isRat()?0:dirSign()*cl(Math.abs(S.rpm)/MODES[S.mode].rpmMax,0,1);
+const tgtF =()=>MODES[S.mode].tq/MODES[S.mode].tqMax;
+const peakF=()=>cl(S.peak/MODES[S.mode].tqMax,0,1);
+
+/* 一侧的分段（从中心往外，或从一端往另一端）
+ *   side=+1 往右长，-1 往左长；slant>0 时段的斜向朝生长方向，像箭头 */
+function segRun(g,xs,len,y,h,n,frac,side,slant,mark,markStyle){
+  const gap=2, w=(len-gap*(n-1))/n;
+  const mi=mark==null?-1:Math.min(n-1,Math.floor(mark*n-1e-6));
+  for(let i=0;i<n;i++){
+    const a=xs+side*i*(w+gap), b=a+side*w;
+    const x0=Math.min(a,b), x1=Math.max(a,b);
+    const f=cl(frac*n-i,0,1);
+    let fill;
+    if(S.done && side===1 && i<=mi && markStyle==='target') fill='#FFFFFF';
+    else if(f>0) fill=accA((0.35+0.65*f).toFixed(2));
+    else fill='rgba(255,255,255,0.10)';
+    const sl=slant*side;                     /* 斜向随生长方向镜像 */
+    g.fillStyle=fill; g.beginPath();
+    if(sl>=0){ g.moveTo(x0,y); g.lineTo(x1,y); g.lineTo(x1+sl,y+h/2); g.lineTo(x1,y+h); g.lineTo(x0,y+h); g.lineTo(x0+sl,y+h/2); }
+    else     { g.moveTo(x0,y); g.lineTo(x1,y); g.lineTo(x1+sl,y+h/2); g.lineTo(x1,y+h); g.lineTo(x0,y+h); g.lineTo(x0+sl,y+h/2); }
+    g.closePath(); g.fill();
+    if(i===mi && !(S.done&&markStyle==='target')){
+      g.strokeStyle=markStyle==='peak'?'rgba(255,255,255,.85)':'#FFFFFF';
+      g.lineWidth=1.5; if(markStyle==='peak') g.setLineDash([2,2]);
+      g.stroke(); g.setLineDash([]);
+    }
+  }
+}
+/* 中心零点双向条：右边拧紧（目标刻度），左边松出（峰值保持） */
+function centerBar(g,y,h,n,frac,slant,withMarks){
+  const xc=CX, half=(Rx-L)/2-3;
+  segRun(g,xc+3,half,y,h,n,frac>0?frac:0, 1,slant,withMarks?tgtF():null,'target');
+  segRun(g,xc-3,half,y,h,n,frac<0?-frac:0,-1,slant,withMarks&&S.peak>0?peakF():null,'peak');
+  g.fillStyle='#FFFFFF'; g.fillRect(xc-1,y-4,2,h+8);       /* 零点 */
+}
+
+/* ============================== 弧面槽格 · 配色对比 ==============================
+ * 几何与上一版一致（同轴套筒、同斜、等高、两侧压缩虚化），只换配色。
+ * 为了让四个方案同时流畅地跑：转子只渲染、只虚化一次；每个方案只重算槽格所在的那一条带。
+ */
+const P_={n:15,duty:0.62,arc:0.60,bow:0,h:34,y:306,back:0.45,off:0.60,desat:0.5};
+let nowT=0;
+const CELL={k:[],st:[],hold:[],add:[],steps:8};
+
+/* 到位后的收尾：
+ *   松手后先保持满格一小会儿（确认"到了"），然后能量从合拢点（中心）向两端依次泄掉，
+ *   每格各自淡出 —— 正好是填充过程（两端 → 中心）的反向。
+ *   其他情况（没到位就松手、松出方向）也一样：格子只会按固定速率变暗，不会瞬间熄灭。 */
+const PEAK_SHOW=4.0, HOLD_READ=1.1, DRAIN_DELAY=0.30, DRAIN_STAGGER=0.035, DRAIN_FADE=0.40, FADE_RATE=2.2;
+function prepCells(){
+  /* 按旋向填充：正转（拧紧）从左往右，反转（松出）从右往左 ——
+   * 和转子表面在屏幕上的移动方向一致，能量条就是"顺着转动方向"在走。
+   * j 是沿旋向的序号：0 是起点那一格。 */
+  const PREP_DT=Math.min(0.1,S._lastPrep!==undefined?Math.max(0,nowT-S._lastPrep):0); S._lastPrep=nowT;
+  const N=P_.n, fwd=!S.rev, M=MODES[S.mode];
+  const frac=fwd?cl(S.torque/M.tq,0,1):cl(S.torque/M.tqMax,0,1), v=frac*N;
+  let holdJ=-1;
+  const peakLive=S.rev&&S.peak>0&&!(S.relRev!==undefined&&nowT-S.relRev>PEAK_SHOW);
+  if(peakLive) holdJ=Math.min(N-1,Math.floor(cl(S.peak/M.tqMax,0,1)*N-1e-6));
+  const sweepPos=fr(S.theta/(PITCH*3))*(N+6)-3;
+  /* 到位：一道白光沿旋向从起点冲到终点 */
+  const since=S.done&&fwd?nowT-S.doneAt:99, wave=since<0.35?since/0.35*(N+2)-1:-99;
+  CELL.steps=N;
+  for(let i=0;i<N;i++){
+    const j=fwd?i:N-1-i;
+    let k=cl(v-j,0,1);
+    if(S.done&&fwd&&!S.drained) k=1;
+    if(S.drained) k=0;
+    if(S.draining){
+      /* 泄能也顺着旋向：先亮的先灭，像能量从末端流走 */
+      const t=nowT-S.relAt, delay=DRAIN_DELAY+j*DRAIN_STAGGER;
+      k=1-cl((t-delay)/DRAIN_FADE,0,1);
+      if(t>DRAIN_DELAY+(N-1)*DRAIN_STAGGER+DRAIN_FADE+0.05){ S.draining=false; S.drained=true; }
+    }
+    if(!S.kd) S.kd=new Array(N).fill(0);
+    const kd=S.kd[i]||0;
+    k = k>=kd ? k : Math.max(k, kd-FADE_RATE*PREP_DT);
+    S.kd[i]=k;
+    const hold=j===holdJ;
+    const sw=0;   /* v1.2：去掉扫光（又一个在动的东西） */
+    const wv=Math.max(0,1-Math.abs(j-wave)/1.4);
+    CELL.k[i]=k; CELL.st[i]=j; CELL.hold[i]=hold; CELL.add[i]=Math.min(1,sw+wv);
+  }
+}
+
+/* ---------- 四种配色：输入格的进度阶段 t(0..1) 与亮度 k，输出 [格色, 光晕色, 唇色]；以及条带底托的处理 ---------- */
+const mix=(a,b,t)=>a.map((v,i)=>v+(b[i]-v)*t);
+const lum=c=>0.30*c[0]+0.59*c[1]+0.11*c[2];
+/* 底托不压成黑：降一点亮度 + 去一部分饱和，铜的色相不再和格子抢，纹理仍然在 */
+const backing=(c,inStrip)=>{if(!inStrip)return c;const l=lum(c);
+  return mix(c,[l,l,l],P_.desat).map(v=>v*P_.back);};
+const STYLES={
+  /* A · 暗底托：条带后面压成近黑，模式色在纯黑上最饱和 */
+  A:{back:backing,
+     cell:t=>{const m=S.col.map(v=>v*(0.70+0.30*t)); return t>0.8?mix(m,[255,255,255],0.35):m;},
+     halo:()=>S.col, lip:()=>[255,240,220]},
+  /* B · 白热：格是白的，模式色只在光晕和边唇上 */
+  B:{back:backing,
+     cell:t=>mix([255,222,190],[255,255,255],t),
+     halo:()=>S.col, lip:()=>S.col.map(v=>v+(255-v)*0.2)},
+  /* C · 冷光：铜的互补色，不管什么模式都和背景拉开 */
+  C:{back:backing,
+     cell:t=>mix(S.col.map(v=>v*0.72),mix(S.col,[255,255,255],0.80),t*t),   /* 发光渐变：暗饱和 → 近白 */
+     halo:()=>S.col, lip:()=>mix(S.col,[255,255,255],0.85), haloK:0.55},
+  /* D · 磨砂玻璃：条带后的转子去色、偏冷、提一点亮度，像嵌了一条玻璃 */
+  D:{back:(c,inStrip)=>{if(!inStrip)return c;const l=lum(c);return [l*0.55+26,l*0.58+30,l*0.62+38];},
+     cell:t=>{const m=S.col.map(v=>v*(0.75+0.25*t)); return t>0.8?mix(m,[255,255,255],0.3):m;},
+     halo:()=>S.col, lip:()=>[255,255,255]},
+};
+
+/* 一个像素落在条带的什么位置 */
+function geom(x,y){
+  const C=COLS[x]; if(!C) return null;
+  const Cc=COLS[Math.floor(W/2)];
+  const yc=P_.y-P_.bow*(1-Cc.s/C.s), hh=P_.h/2, dy=y-yc;
+  const N=P_.n, Pa=2*P_.arc/N, pxA=Pa/C.dadx;
+  const u=C.a+SKEW*(dy*C.s/F)+P_.arc, q=u/Pa, i=Math.floor(q), f=q-i;
+  return {C,dy,hh,N,pxA,i,f,
+    inStrip: Math.abs(dy)<=hh+5 && u>-Pa*0.3 && u<2*P_.arc+Pa*0.3,
+    inCell : Math.abs(dy)<=hh && i>=0 && i<N && f<P_.duty};
+}
+
+function composite(sty,x,y,base){
+  const G=geom(x,y); if(!G) return base;
+  const {C,dy,hh,N,pxA,i,f}=G;
+  let c=sty.back(base,G.inStrip);
+  if(G.inCell){
+    const k=CELL.k[i], t=CELL.st[i]/(CELL.steps-1);
+    let r=c[0]*P_.off, g=c[1]*P_.off, b=c[2]*P_.off;            /* 未亮的格：比底托再暗一档，但不是黑洞 */
+    const narrow=Math.min(1,pxA*P_.duty/9);
+    const lipA=narrow*Math.max(f*pxA<1.3?1-f*pxA/1.3:0,(hh-Math.abs(dy))<1.1&&dy<0?0.6:0);
+    const lp=sty.lip();
+    r+=40*lipA; g+=36*lipA; b+=34*lipA;
+    if(k>0.01){
+      const cc=sty.cell(t), e=C.fall*k;
+      r=r*(1-k)+cc[0]*e; g=g*(1-k)+cc[1]*e; b=b*(1-k)+cc[2]*e;
+      r+=lp[0]*0.7*lipA*e; g+=lp[1]*0.7*lipA*e; b+=lp[2]*0.7*lipA*e;
+    }
+    const ad=Math.min(1,CELL.add[i]+(S.clickFlash||0)*0.15*k)*C.fall; r+=255*0.45*ad; g+=255*0.45*ad; b+=255*0.45*ad;
+    if(CELL.hold[i]){const ed=Math.min(f*pxA,(P_.duty-f)*pxA,hh-Math.abs(dy));
+      if(ed<1.6){r=255*C.fall;g=255*C.fall;b=255*C.fall;}}
+    return [r,g,b];
+  }
+  /* 光晕 */
+  let bd=1e9,best=-1;
+  for(const j of [i-1,i,i+1]){
+    if(j<0||j>=N||CELL.k[j]<0.02) continue;
+    const dx=j<i?(f*pxA+(i-j-1)*pxA):(j>i?((1-f)*pxA+(j-i-1)*pxA):Math.max(0,(f-P_.duty)*pxA));
+    const d=Math.hypot(Math.max(0,dx),Math.max(0,Math.abs(dy)-hh)); if(d<bd){bd=d;best=j;}
+  }
+  if(best>=0){
+    const pulse=MODES[S.mode].turbo&&!CALM?1+0.08*S.load*Math.sin(nowT*4):1;      /* TURBO：光晕随负载缓慢呼吸（<1Hz，幅度小） */
+    const h=Math.exp(-bd/2.6)*(sty.haloK||0.38)*pulse*CELL.k[best]*C.fall, hc=sty.halo();
+    c=[c[0]+hc[0]*h,c[1]+hc[1]*h,c[2]+hc[2]*h];}
+  return c;
+}
+
+/* ---------- 渲染：转子一次，条带每方案一次 ---------- */
+const SCRIM_Y0=320;
+/* 窗口遮罩：窗外全黑，上下边各 ROT_FADE 像素渐隐 */
+const scrimA=y=>{if(y<ROT_Y0||y>ROT_Y1)return 1;const d=Math.min(y-ROT_Y0,ROT_Y1-y);return d>=ROT_FADE?0:1-d/ROT_FADE;};
+const SH=new Float32Array(W*H*3);                  /* 清晰的转子（已压暗） */
+const BL=new Uint8ClampedArray(W*H*4);             /* 整屏虚化后的底图 */
+function blurCol(x){const C=COLS[x];return C?C.blur:DOF_MAX;}
+function blurInto(src,dst,y0,y1){                   /* src/dst: Float32 RGB, 只处理 y0..y1 行 */
+  const tmp=new Float32Array(W*H*3);
+  const ya=Math.max(BAR_H,y0-DOF_MAX-1), yb=Math.min(H-1,y1+DOF_MAX+1);
+  for(let y=ya;y<=yb;y++)for(let x=0;x<W;x++){const rad=blurCol(x),ri=Math.ceil(rad);let r=0,g=0,b=0,w=0;
+    for(let k=-ri;k<=ri;k++){const xx=cl(x+k,0,W-1),wt=ri?Math.max(0,1-Math.abs(k)/(rad+1)):1,j=(y*W+xx)*3;
+      r+=src[j]*wt;g+=src[j+1]*wt;b+=src[j+2]*wt;w+=wt;}const i=(y*W+x)*3;tmp[i]=r/w;tmp[i+1]=g/w;tmp[i+2]=b/w;}
+  for(let x=0;x<W;x++){const rad=blurCol(x),ri=Math.ceil(rad);
+    for(let y=Math.max(BAR_H,y0);y<=Math.min(H-1,y1);y++){let r=0,g=0,b=0,w=0;
+      for(let k=-ri;k<=ri;k++){const yy=cl(y+k,ya,yb),wt=ri?Math.max(0,1-Math.abs(k)/(rad+1)):1,j=(yy*W+x)*3;
+        r+=tmp[j]*wt;g+=tmp[j+1]*wt;b+=tmp[j+2]*wt;w+=wt;}const i=(y*W+x)*3;dst[i]=r/w;dst[i+1]=g/w;dst[i+2]=b/w;}}
+}
+const FULL=new Float32Array(W*H*3), BAND=new Float32Array(W*H*3), BANDO=new Float32Array(W*H*3);
+let MB_N=1, MB_WIN=0;
+function renderFor(V){
+  /* v1.2：去掉运动模糊/拖影。多重采样叠出来的就是"残影"；改为降速 + 单次清晰采样 */
+  MB_WIN=0; MB_N=1;
+  SH.fill(0);
+  for(let y=ROT_Y0;y<=ROT_Y1;y++){const sy=y+.5-CY,sa=scrimA(y);
+    for(let x=0;x<W;x++){let c;
+      const nb=MB_N;
+      if(nb===1) c=shadeRotor(x,sy,S.theta);
+      else{ c=[0,0,0]; for(let k=0;k<nb;k++){const q=shadeRotor(x,sy,S.theta-dirSign()*MB_WIN*k/(nb-1));c[0]+=q[0];c[1]+=q[1];c[2]+=q[2];} c[0]/=nb;c[1]/=nb;c[2]/=nb; }
+      const i=(y*W+x)*3;
+      SH[i]=c[0]*(1-sa);SH[i+1]=c[1]*(1-sa);SH[i+2]=c[2]*(1-sa);}}
+  FULL.fill(0); blurInto(SH,FULL,ROT_Y0,ROT_Y1);
+  for(let i=0,j=0;i<W*H*4;i+=4,j+=3){BL[i]=FULL[j];BL[i+1]=FULL[j+1];BL[i+2]=FULL[j+2];BL[i+3]=255;}
+  const y0=Math.floor(P_.y-P_.h/2-P_.bow-12), y1=Math.ceil(P_.y+P_.h/2+12);
+  {
+    const sty=STYLES[STYLE];
+    const ya=Math.max(BAR_H,y0-DOF_MAX-1), yb=Math.min(H-1,y1+DOF_MAX+1);
+    for(let y=ya;y<=yb;y++)for(let x=0;x<W;x++){const i=(y*W+x)*3;
+      const c=composite(sty,x,y,[SH[i],SH[i+1],SH[i+2]]);BAND[i]=c[0];BAND[i+1]=c[1];BAND[i+2]=c[2];}
+    blurInto(BAND,BANDO,y0,y1);
+    const d=V.img.data; d.set(BL);
+    for(let y=y0;y<=y1;y++)for(let x=0;x<W;x++){const i=(y*W+x),j=i*3,o=i*4;
+      d[o]=BANDO[j];d[o+1]=BANDO[j+1];d[o+2]=BANDO[j+2];}
+  }
+}
+function scrimBottom(){}
+
+/* v1.4：转速在上但只占一行；扭矩是主信息，底部最大号，槽格（扭矩进度）在它正上方 */
+const draw=g=>base(g,{rpmY:70,rpmSize:32,tqLabY:372,tqY:442,tqSize:120});
+let STYLE='A';
+const VARIANTS=MODES.map((M,k)=>({k,name:M.name,
+  desc:['精密：冰蓝。冷、细、准，低扭矩小转速。',
+        '标准：铜色，和电机本体同一种颜色。槽格靠去色的灰底托和背景分开。',
+        '棘轮：绿。转子按槽位一格一格分度，槽格跟着一下一下亮。',
+        'TURBO：品红。最大扭矩，转子发热泛红，数字前倾带辉光。'][k]}));
+/* ============================== 页面 ============================== */
+VARIANTS.forEach(V=>{
+  const d=document.createElement('div'); d.className='v';
+  d.innerHTML=`<h3>${V.name}</h3><div class="shell"><canvas width="228" height="460"></canvas></div><p>${V.desc}</p>`;
+  document.getElementById('grid').appendChild(d);
+  V.g=d.querySelector('canvas').getContext('2d'); V.img=new ImageData(W,H); V.cv=d.querySelector('canvas'); V.state=mkState(V.k);
+});
+
+
+/* ============================== 状态：自动演示交替拧紧 / 松出 ============================== */
+let tp=performance.now(), wasOn=false, cycle=0, acc=0, FPS=0, SPEED=1, VIEW=1, CALM=false;   /* FPS=0：跟随显示器 */
+let hzEMA=60, rmsEMA=0;
+/* 设备帧率：AMOLED 按 TE（约 60Hz）锁帧时，实际只能是 60 / 30 / 20 …… 这些整除档。
+ * 原型按设备帧推进：每一步固定 dt=1/FPS，画面只在这些时刻更新 —— 所见即真机节奏。 */
+
+/* ============================== 棘轮运动 ==============================
+ * 真棘轮不是"匀速一格一格跳"，而是一个往复：
+ *   驱动行程：转子被带着转过一段（快进、轻微过冲、落稳）
+ *   回程：手腕回拧，转子不动，棘爪滑过棘齿 —— 每过一齿一下"咔"，转子被轻轻顶一下又弹回
+ * 原来的实现每次刚好跳一个槽距，而槽纹每个槽距重复一次，所以画面看起来根本没动。
+ */
+const STROKE=PITCH*1.5;                 /* 每个驱动行程转 1.5 个槽：落点交错，前进看得见 */
+const T_DRIVE=0.42, T_RETURN=0.30, CLICKS=[0.06,0.135,0.21];
+const easeOutBack=t=>t*t*(3-2*t);   /* v1.2：smoothstep，无过冲；峰值 1.5×1.5槽/0.42s ≈ 0.09 槽/帧 */
+const _oldEase=t=>{const c=0.6;return 1+(c+1)*Math.pow(t-1,3)+c*Math.pow(t-1,2);};
+function ratchetStep(dt,M,tighten){
+  if(S.ph===undefined){S.ph='drive';S.phT=0;S.th0=S.theta;}
+  const dir=dirSign();
+  S.phT+=dt;
+  if(S.ph==='drive'){
+    const t=Math.min(1,S.phT/T_DRIVE);
+    S.theta=S.th0+dir*STROKE*easeOutBack(t);
+    if(t>=1){
+      S.ph='return'; S.phT=0; S.th1=S.th0+dir*STROKE; S.clicks++;
+      if(tighten){ S.torque=Math.min(M.tq,+(S.torque+M.tq*0.14).toFixed(3)); if(S.torque>=M.tq) S.done=1; }
+    }
+  }else{
+    /* 回程：转子停在原位，每一声"咔"都是一个很短的反向顶动 + 回弹 */
+    S.theta=S.th1;                      /* v1.4.3：回程转子完全静止，不再"顶一下回弹"（看起来是抖） */
+    S.clickFlash=Math.max(0,...CLICKS.map(tc=>1-Math.abs(S.phT-tc)/0.03));
+    if(S.phT>=T_RETURN){ S.ph='drive'; S.phT=0; S.th0=S.th1; S.theta=S.th1; }
+  }
+  S.rpm=0;
+}
+
+function step(dt,on){
+  const th_prev=S.theta;
+  const M=MODES[S.mode];
+  if(on&&!S._wasOn){ S.rt=0; S.peak=0; S.done=0; S.draining=false; S.drained=false; }
+  if(!on&&S._wasOn&&S.done&&!S.rev){ S.draining=true; S.relAt=nowT; }
+  if(!on&&S._wasOn&&S.rev) S.relRev=nowT;
+  if(on&&!S._wasOn) S.relRev=undefined;   /* 到位后松手：开始泄能 */
+  if(S.done&&!S._pd) S.doneAt=nowT; S._pd=S.done;
+  S._wasOn=on;
+  const breakaway=M.tq*0.85;
+  if(on && !(S.done&&!S.rev)){
+    S.rt+=dt; S.load=Math.min(1,S.load+dt*.9);
+    if(!S.rev){
+      /* 拧紧 */
+      if(isRat()) ratchetStep(dt,M,true);
+      else{
+        S.torque=Math.min(M.tqMax,S.torque+dt*.85*(1-S.torque/(M.tq*1.3)));
+        const droop=1-.45*(S.torque/Math.max(.01,M.tq));
+        S.rpm+=(M.rpm*Math.max(.15,droop)-S.rpm)*Math.min(1,dt*3.2);
+        if(S.torque>=M.tq){S.torque=M.tq;S.done=1;}
+      }
+    }else{
+      /* 松出：先冲到破坏扭矩，松动后迅速回落，转速随之上来 */
+      const tgtT = S.rt<0.7 ? breakaway*Math.sin(Math.min(1,S.rt/0.7)*Math.PI/2) : breakaway*0.12;
+      S.torque += (tgtT-S.torque)*Math.min(1,dt*(S.rt<0.7?12:2.5));
+      S.peak=Math.max(S.peak,S.torque);
+      if(isRat()) ratchetStep(dt,M,false);
+      else{ const tr = S.rt<0.7 ? M.rpm*0.08 : M.rpm; S.rpm+=(tr-S.rpm)*Math.min(1,dt*3); }
+    }
+  }else if(!on){
+    S.load+=(0-S.load)*Math.min(1,dt*4);
+    S.rpm+=(0-S.rpm)*Math.min(1,dt*2.2); if(S.rpm<3)S.rpm=0;
+    const holding=S.draining&&nowT-S.relAt<HOLD_READ;
+    if(!holding){ S.torque+=(0-S.torque)*Math.min(1,dt*3); if(S.torque<.02){S.torque=0;S.done=0;S.clicks=0;} }
+    S.ratT=0;
+    if(isRat()&&S.ph!==undefined){            /* 松手：停在当前行程的落点 */
+      if(S.ph==='drive'){ S.theta=S.th0+dirSign()*STROKE*easeOutBack(Math.min(1,S.phT/T_DRIVE)); }
+      S.ph=undefined; S.clickFlash=0;
+    }
+  }
+  /* 显示转速 ≠ 真实转速。屏上一个槽距 ~ 30px，真实 450rpm 在 60fps 下每帧要走 0.9 个槽距，
+   * 超过半个槽距就会频闪/倒转（车轮效应），整屏高对比条纹一起闪就是"晃眼"。所以：压缩 + 封顶。 */
+  if(!isRat()){
+    /* 显示角速度：每帧走多少槽距。按 60fps 标定，换帧率时按时间换算，但永远不超过 MAX_STEP/帧 */
+    const u=Math.pow(Math.min(1,Math.abs(S.rpm)/RPM_REF),RPM_GAMMA);          /* 0..1 */
+    const capF=(CALM?0.05:MAX_STEP);
+    const perFrame60=Math.min(capF, u*MAX_STEP*SPEED);
+    const step=Math.min(capF*PITCH, perFrame60*PITCH*60*dt);
+    S.theta+=dirSign()*step;
+  }
+  S.sweep=Math.abs(S.theta-th_prev);
+
+}
+function loop(now){
+  const el=(now-tp)/1000; tp=now;
+  if(el>0&&el<0.2) hzEMA+= (1/el-hzEMA)*0.05;
+  let steps, dt;
+  if(FPS===0){
+    /* 跟随显示器：每次刷新推进一帧，dt 用实际间隔（144Hz 屏上每帧都不同、都均匀） */
+    steps=1; dt=el>0&&el<0.1?el:1/60;
+  }else{
+    acc+=Math.min(.1,el);
+    if(acc<1/FPS){ requestAnimationFrame(loop); return; }
+    /* 设备帧率高于显示器刷新时：按设备帧推进多步，只画最后一帧（浏览器能显示的上限就是显示器刷新） */
+    steps=Math.min(8,Math.floor(acc*FPS)); acc-=steps/FPS; dt=1/FPS;
+  }
+  nowT=now/1000;
+  const t0=performance.now();
+  for(let si=0;si<steps;si++){
+    const last=si===steps-1;
+  let on=manual;
+  if(auto&&!manual){
+    const prev=demoT; demoT=(demoT+dt)%6.5;
+    if(demoT<prev){ cycle++; const r=(cycle%2)===1; VARIANTS.forEach(V=>V.state.rev=r); syncDir(); }
+    on=demoT>0.6&&demoT<4.4;
+  }
+  for(const V of VARIANTS){
+    S=V.state; step(dt,on);
+    if(!last) continue;
+    if(VIEW>=0 && V.k!==VIEW) continue;
+    prepCells(); renderFor(V);
+    V.g.putImageData(V.img,0,0); frame(V.g); draw(V.g); statusBar(V.g); corners(V.g);
+  }
+  }
+  rmsEMA+=((performance.now()-t0)-rmsEMA)*0.1;
+  const info=document.getElementById('info');
+  if(info){
+    const shown=Math.min(FPS,Math.round(hzEMA));
+    const hz=Math.round(hzEMA);
+    info.textContent=(FPS===0?'跟随显示器 · 约 '+hz+' fps':'设备时序 '+FPS+' fps · 本机显示器约 '+hz+' Hz'+
+      (FPS>hzEMA+2?' → 只能看到 '+shown+' fps（时间仍按 '+FPS+' fps 推进）':'')+
+      (FPS<hzEMA-2&&Math.abs(hzEMA/FPS-Math.round(hzEMA/FPS))>0.1?' ⚠ 不能整除，帧停留时长不均，会发顿/重影（真机不会）':''))+
+      ' · 浏览器渲染 '+rmsEMA.toFixed(1)+' ms/帧（非 MCU 耗时）';
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* ============================== 控制 ============================== */
+const ab=document.getElementById('auto');
+ab.onclick=()=>{auto=!auto;ab.setAttribute('aria-pressed',auto);ab.textContent='自动演示 '+(auto?'开':'关');};
+const tb=document.getElementById('trig');
+tb.addEventListener('pointerdown',e=>{e.preventDefault();manual=true});
+addEventListener('pointerup',()=>manual=false);
+addEventListener('keydown',e=>{if(e.key===' '&&!e.repeat){manual=true;e.preventDefault()}});
+addEventListener('keyup',e=>{if(e.key===' ')manual=false});
+document.getElementById('bStyle').onclick=e=>{STYLE=STYLE==='A'?'C':'A';
+  e.target.textContent=STYLE==='A'?'风格 · A 实色':'风格 · C 发光';};
+const db=document.getElementById('bDir');
+function syncDir(){ document.getElementById('bDir').textContent='旋向 · '+(S.rev?'反转 松出':'正转 拧紧'); }
+db.onclick=()=>{ const r=!VARIANTS[0].state.rev; VARIANTS.forEach(V=>{const t=V.state;t.rev=r;t.peak=0;t.torque=0;t.done=0;}); S=VARIANTS[0].state; syncDir(); };
+syncDir();
+document.querySelectorAll('.fps').forEach(b=>b.onclick=()=>{
+  FPS=+b.dataset.f; document.querySelectorAll('.fps').forEach(x=>x.setAttribute('aria-pressed',x===b));});
+const spd=document.getElementById('spd');
+spd.oninput=()=>{SPEED=spd.value/100;document.getElementById('spdv').textContent=SPEED.toFixed(2)+'×';};
+document.getElementById('calm').onclick=e=>{CALM=!CALM;e.target.setAttribute('aria-pressed',CALM);
+  e.target.textContent='减少动态 '+(CALM?'开':'关');};
+document.querySelectorAll('.view').forEach(b=>b.onclick=()=>{
+  VIEW=+b.dataset.v; document.querySelectorAll('.view').forEach(x=>x.setAttribute('aria-pressed',x===b));
+  document.querySelectorAll('.v').forEach((el,i)=>el.style.display=(VIEW<0||i===VIEW)?'':'none');});
+document.querySelectorAll('.v').forEach((el,i)=>el.style.display=(VIEW<0||i===VIEW)?'':'none');
+/* ---- 真实尺寸：228×460 / 1.58" → 324.9 PPI → 17.82 × 35.96 mm ----
+ * 浏览器的 1mm 只是 96/25.4 CSS px，和你的显示器实际 1mm 不一定相等，所以用银行卡校准一个系数 k。 */
+const PANEL_MM=[228/324.94*25.4, 460/324.94*25.4];
+let SIZE='1', MMK=1;
+try{ const v=parseFloat(localStorage.getItem('qd_mmk')); if(v>0.3&&v<3) MMK=v; }catch(e){}
+/* 三种尺寸互斥：1× / 2× / 真实尺寸 */
+function applySize(){
+  const REAL=SIZE==='real', z=SIZE==='2';
+  const cal=document.getElementById('calib'), card=document.getElementById('card');
+  cal.style.display=REAL?'flex':'none';
+  card.style.width=(85.60*MMK)+'mm'; card.style.height=(53.98*MMK)+'mm';
+  document.getElementById('mmk').value=Math.round(MMK*100);
+  document.getElementById('mmkv').textContent=MMK.toFixed(2);
+  const ppi=96*devicePixelRatio*MMK;
+  document.getElementById('ppiv').textContent='（你的屏幕约 '+Math.round(ppi)+' PPI；设备屏 325 PPI，像素密度是你屏幕的 '+(325/ppi).toFixed(1)+' 倍）';
+  VARIANTS.forEach(V=>{
+    V.cv.style.imageRendering=REAL?'auto':'pixelated';
+    V.cv.style.width =REAL?(PANEL_MM[0]*MMK)+'mm':(z?'456px':'228px');
+    V.cv.style.height=REAL?(PANEL_MM[1]*MMK)+'mm':(z?'920px':'460px');
+    const sh=V.cv.parentElement; sh.style.padding=REAL?(2*MMK)+'mm':''; sh.style.borderRadius=REAL?(5*MMK)+'mm':'';
+  });
+  document.querySelectorAll('.v').forEach(v=>v.style.width=REAL?'auto':(z?'490px':'260px'));
+  document.querySelectorAll('.sz').forEach(b=>b.setAttribute('aria-pressed',b.dataset.s===SIZE));
+}
+document.querySelectorAll('.sz').forEach(b=>b.onclick=()=>{SIZE=b.dataset.s; applySize();});
+document.getElementById('mmk').oninput=e=>{MMK=e.target.value/100; try{localStorage.setItem('qd_mmk',MMK)}catch(_){} applySize();};
+document.querySelectorAll('#sl input').forEach(el=>{
+  el.oninput=()=>{const k=el.dataset.k;
+    const frac=['duty','arc','back','off','desat'].includes(k);
+    const v=frac?el.value/100:+el.value; P_[k]=v;
+    document.getElementById('v_'+k).textContent=frac?v.toFixed(2):v;};
+});
+</script>
+</body>
+</html>

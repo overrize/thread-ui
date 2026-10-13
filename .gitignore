@@ -12,3 +12,7 @@ sim_topbar.png
 .idea/
 .DS_Store
 Thumbs.db
+
+# 本地日志 / 外部交付包（不进仓库）
+monitor.log
+*.zip

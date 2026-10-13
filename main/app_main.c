@@ -35,6 +35,7 @@
 #include "ui_widgets.h"
 #include "menu.h"
 #include "knob_uart.h"
+#include "qd_app.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
@@ -55,6 +56,8 @@ static const float STD_TORQUE[STD_GEARS] = { 0.20f, 0.40f, 0.60f, 1.00f };
 #define RATCHET_TORQUE    1.20f                   /* 扭矩扳手上限 */
 
 /* ---- 休眠参数 ---- */
+#define UI_QUANTDRIVER    1                       /* 1 = 228x460 整屏新 UI（qd_app.c）；0 = 旧 120x240 UI */
+#define AUTO_SLEEP        0                      /* 新屏调试期关闭：3.3V VBAT 下休眠亮度 24 看着像黑屏 */
 #define SLEEP_AFTER_US    (30 * 1000 * 1000)      /* 30s 无操作休眠 */
 #define SLEEP_BRIGHTNESS  24                      /* 休眠亮度（AOD 式暗屏，不黑屏） */
 #define WAKE_BRIGHTNESS   255
@@ -147,20 +150,21 @@ static void draw_scrim(void)
 /* 每帧驱动压条动画；返回 true 表示还在动（需要继续重刷） */
 static bool scrim_anim_step(float dt)
 {
-    float k = dt * 10.0f;                   /* 时间常数 ~100ms */
+    float k = dt * 22.0f;                   /* 时间常数 ~45ms：数字跟手，又不至于硬跳 */
     if (k > 1.0f) k = 1.0f;
     bool anim = false;
 
     float dv = (S.tq_locked ? 0.0f : 1.0f) - s_view_t;
-    if (dv > 0.01f || dv < -0.01f) { s_view_t += dv * k; anim = true; }
+    if (dv > 0.02f || dv < -0.02f) { s_view_t += dv * k; anim = true; }
     else if (s_view_t != (S.tq_locked ? 0.0f : 1.0f)) { s_view_t = S.tq_locked ? 0.0f : 1.0f; anim = true; }
 
     float ds = current_torque() - s_disp_set;
-    if (ds > 0.002f || ds < -0.002f) { s_disp_set += ds * k; anim = true; }
-    else if (s_disp_set != current_torque()) { s_disp_set = current_torque(); anim = true; }
+    /* 设定值直接跟随、不做趋近：指数平滑的尾巴会让数字在手停后还爬 200ms+，
+     * 调节类数字必须"手停数停"。平滑只留给视图换位（上面）和反馈值（下面） */
+    if (ds != 0.0f) { s_disp_set = current_torque(); anim = true; }
 
     float df = S.tq_feedback - s_disp_fb;
-    if (df > 0.002f || df < -0.002f) { s_disp_fb += df * k; anim = true; }
+    if (df > 0.005f || df < -0.005f) { s_disp_fb += df * k; anim = true; }
     else if (s_disp_fb != S.tq_feedback) { s_disp_fb = S.tq_feedback; anim = true; }
 
     return anim;
@@ -172,6 +176,31 @@ static void draw_topbar(void)
     thread_get_base_color(base);
     ui_draw_topbar(S.mode, S.rpm_set[S.mode], S.tq_locked, base,
                    S.batt_pct, S.batt_charging);
+}
+
+/* ---- 帧 pacing：微秒级，粗睡 + 末段短自旋 ----
+ *
+ * 没有 TE 线，面板扫描率测不出来，只能用 FRAME_PERIOD_US 去逼近：
+ * 撕裂缝的漂移速度 = 帧率与扫描率的差。校准方法（板子在手时做）：
+ *   1. 烧录后让螺纹动起来（双击换模式 / 扳机），盯着撕裂缝；
+ *   2. 缝缓慢漂移 → 记下扫过整屏的秒数 T，调整量 ≈ 278/T（us）；
+ *      例：10s 扫一屏 → 改 ~28us。方向先试加，漂移变快就改减；
+ *   3. 缝钉住不动 = 对准。之后若想藏缝，再微调几百 us 把它停进底部渐隐带。
+ * 根治仍是飞 TE 线到 GPIO13 + disp_wait_te()。 */
+#define FRAME_PERIOD_US  16670                  /* ≈60Hz 起步，按上面方法微调 */
+
+static void frame_wait(int64_t *next)
+{
+    int64_t now = esp_timer_get_time();
+    if (*next < now - FRAME_PERIOD_US) {        /* 休眠/菜单归来：不追帧，重新对齐 */
+        *next = now;
+    }
+    *next += FRAME_PERIOD_US;
+    int64_t slack = *next - esp_timer_get_time();
+    if (slack > 3000) {
+        vTaskDelay(pdMS_TO_TICKS((slack - 2000) / 1000));   /* 粗睡，留 ~2ms */
+    }
+    while (esp_timer_get_time() < *next) { }    /* 末段自旋：亚毫秒对齐，<2ms */
 }
 
 /* ---------------- 休眠 / 唤醒 ---------------- */
@@ -284,6 +313,10 @@ static void on_wheel(wheel_evt_t e, int d, void *ctx)
 void app_main(void)
 {
     ESP_ERROR_CHECK(disp_init());
+    if (UI_QUANTDRIVER) {
+        ESP_ERROR_CHECK(qd_app_start());     /* 新整屏 UI 自带渲染任务，旧 UI 不启动 */
+        return;
+    }
     thread_init();
     wheel_init(on_wheel, NULL);
     knob_init();                            /* 触觉旋钮板 UART 通信 */
@@ -306,8 +339,10 @@ void app_main(void)
     draw_topbar();
     draw_scrim();
 
-    const TickType_t period = pdMS_TO_TICKS(16);   /* 60fps */
-    TickType_t last_wake = xTaskGetTickCount();
+    /* 帧节奏用 esp_timer 微秒级 pacing（1ms tick 太粗：±1ms = ±3.6Hz 差频）。
+     * 没有 TE 线，面板扫描率只能靠 FRAME_PERIOD_US 逼近——撕裂缝的漂移速度
+     * 就是帧率与扫描率的差。校准方法见 frame_wait() 上方注释。 */
+    int64_t next_frame = esp_timer_get_time();
     int64_t t_prev = esp_timer_get_time();
 
     uint32_t frames = 0;
@@ -367,12 +402,12 @@ void app_main(void)
                 memcpy(s_sleep_drawn, clk, sizeof(clk));
                 ui_draw_sleep(clk);
             }
-            vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(50));
+            vTaskDelay(pdMS_TO_TICKS(50));      /* 休眠屏静态显示，50ms 粗刷即可 */
             continue;
         }
 
         /* 无操作 30s 且没在干活 -> 休眠 */
-        if (!s_trigger && t_now - S.last_activity >= SLEEP_AFTER_US) {
+        if (AUTO_SLEEP && !s_trigger && t_now - S.last_activity >= SLEEP_AFTER_US) {
             enter_sleep();
             continue;
         }
@@ -415,7 +450,7 @@ void app_main(void)
             int64_t body = esp_timer_get_time() - t_now;
             body_time_us += body;
             if (body > body_max_us) body_max_us = body;
-            vTaskDelayUntil(&last_wake, period);
+            vTaskDelay(pdMS_TO_TICKS(50));      /* 菜单静态显示，50ms 粗刷即可 */
             continue;
         }
 
@@ -423,7 +458,7 @@ void app_main(void)
         if (S.color_anim) {
             uint8_t cur[3], nxt[3];
             thread_get_base_color(cur);
-            float k = dt * 6.0f;                    /* 时间常数 ~167ms，与帧率无关 */
+            float k = dt * 10.0f;                   /* 时间常数 ~100ms，与帧率无关 */
             if (k > 1.0f) k = 1.0f;
             bool done = true;
             for (int i = 0; i < 3; i++) {
@@ -442,17 +477,18 @@ void app_main(void)
             }
             thread_set_color(nxt);
             if (done) S.color_anim = false;         /* 到位后不再做无意义计算 */
-            s_dirty_top = true;
-            s_dirty_scrim = true;
+            /* 状态条/压条的重刷在出图前统一置脏（隔帧），这里不重复置 */
         }
 
-        /* --- 模式切换的螺纹快速滚动：0.7s 正弦包络，起停平滑 --- */
+        /* --- 模式切换的螺纹快速滚动：0.9s 正弦包络，起停平滑 ---
+         * 峰值 500rpm：全程约滚 5 个牙距、峰值 ~2.3px/帧，
+         * 能看清一根根牙滚过去（原来 1600rpm 接近半牙/帧，是糊的） */
         if (S.spin) {
-            S.spin_t += dt / 0.7f;
+            S.spin_t += dt / 0.9f;
             if (S.spin_t >= 1.0f) {
                 S.spin = false;
             } else {
-                float rpm = 3600.0f * sinf((float)M_PI * S.spin_t);
+                float rpm = 500.0f * sinf((float)M_PI * S.spin_t);
                 thread_advance(rpm, dt, menu_reverse());
             }
         }
@@ -481,9 +517,18 @@ void app_main(void)
             s_dirty_scrim = true;
         }
 
-        /* 状态条和压条：先刷小区域（短 DMA），动画区（长 DMA）最后刷，
-         * 小 DMA 的传输时间正好盖住后续 CPU 合成，等待不串行叠加 */
-        if (S.color_anim) {
+        /* --- 出图：动画区最先刷 ---
+         * 动画区推屏时刻固定在帧首（唤醒 + 固定 ~1.3ms 合成），与面板扫描的
+         * 相位保持稳定 → 撕裂缝钉住不动。若排在小区域之后，小区域时刷时不刷，
+         * 推屏时机每帧抖动几毫秒，缝的位置跟着抖 = 观感上的"闪烁"。
+         * 小区域后刷，它们的 DMA 等待由帧尾空闲时间吸收。 */
+        int64_t t0 = esp_timer_get_time();
+        thread_render();
+        render_time_us += esp_timer_get_time() - t0;
+        frames++;
+
+        /* 变色动画期间隔帧重刷：颜色中间帧人眼不敏感，少两笔 DMA 排队 */
+        if (S.color_anim && (frames & 1) == 0) {
             s_dirty_top = true;
             s_dirty_scrim = true;
         }
@@ -498,12 +543,6 @@ void app_main(void)
             n_scrim++;
         }
 
-        /* --- 出图 --- */
-        int64_t t0 = esp_timer_get_time();
-        thread_render();
-        render_time_us += esp_timer_get_time() - t0;
-        frames++;
-
         /* 帧主体耗时（含渲染、脏矩形重绘、输入处理），用于定位掉帧 */
         {
             int64_t body = esp_timer_get_time() - t_now;
@@ -511,6 +550,6 @@ void app_main(void)
             if (body > body_max_us) body_max_us = body;
         }
 
-        vTaskDelayUntil(&last_wake, period);
+        frame_wait(&next_frame);
     }
 }
