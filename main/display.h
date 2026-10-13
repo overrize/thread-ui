@@ -46,3 +46,14 @@ bool  disp_te_available(void);
 uint32_t disp_te_misses(void);       /* 累计等不到 TE 的次数 */
 bool  disp_panel_lost(void);         /* 连续多帧无 TE：面板掉电复位了 */
 void  disp_panel_recover(void);      /* 重新复位 + 初始化面板 */
+
+/* ---- 诊断（绿屏 / 黑屏排查）---- */
+typedef struct {
+    uint32_t edges;                  /* 统计窗口内 TE 上升沿数 */
+    int32_t  per_min, per_max;       /* TE 周期 us（正常 ≈16667） */
+    int32_t  hi_min, hi_max;         /* TE 高电平宽度 us（= 消隐期长度） */
+} disp_te_stats_t;
+void  disp_te_stats(disp_te_stats_t *out);   /* 读出并清零 */
+uint32_t disp_flush_timeouts(void);          /* 累计 DMA 完成等待超时 */
+uint32_t disp_recovers(void);                /* 累计面板重新初始化次数 */
+void  disp_keepalive(void);                  /* 重写关键寄存器（像素格式/命令页/TE/亮度/开显示），须在无在途推送时调 */

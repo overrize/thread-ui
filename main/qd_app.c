@@ -22,6 +22,7 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -29,6 +30,7 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_system.h"
 #include "display.h"
 #include "qd_app.h"
 #include "demo_state.h"
@@ -50,6 +52,33 @@ static uint16_t *s_buf[2];
 static uint16_t *s_fb;           /* 整帧缓冲 228x460x2 ≈ 205KB，内部 DMA RAM */
 static SemaphoreHandle_t s_frame_ready, s_fb_free;   /* 整帧流水线握手 */
 static volatile bool s_force_recover;                /* 串口 'r'：手动重新初始化面板 */
+static volatile bool s_keepalive = true;             /* 串口 'k'：寄存器保活开关（A/B 对比绿屏用） */
+static volatile int32_t s_push_min = INT32_MAX, s_push_max;   /* 整帧推送 DMA 耗时 us，日志后清零 */
+static TaskHandle_t s_h_flush, s_h_r0, s_h_r1;
+
+/* 逐帧黑匣子：面板掉线时打印掉线前 ~1.5s 的帧，找是哪种画面/哪个阶段把面板拖垮的 */
+typedef struct {
+    uint32_t t_ms;
+    uint8_t mode, rev, on, done;
+    uint16_t demo_cs;        /* 演示进度 0.01s（一圈 6.5s） */
+    uint8_t apl;             /* 平均亮度 0~255（R+G+B 抽样均值，近似面板电流） */
+    uint8_t rpm_pct, load_pct, draining;
+} frame_rec_t;
+#define REC_N 48
+static frame_rec_t s_rec[REC_N];
+static volatile uint32_t s_rec_i;
+
+static void rec_dump(void)
+{
+    uint32_t end = s_rec_i, n = end < REC_N ? end : REC_N;
+    ESP_LOGW(TAG, "last %u frames before panel loss (t_ms mode rev on done drain demo_t apl rpm%% load%%):", (unsigned)n);
+    for (uint32_t i = end - n; i != end; i++) {
+        const frame_rec_t *r = &s_rec[i % REC_N];
+        printf("  %7lu m%u r%u on%u done%u dr%u t=%u.%02u apl %3u rpm %3u%% load %3u%%\n",
+               (unsigned long)r->t_ms, r->mode, r->rev, r->on, r->done, r->draining,
+               r->demo_cs / 100, r->demo_cs % 100, r->apl, r->rpm_pct, r->load_pct);
+    }
+}
 
 /* ---------------- 双核：把 [a, b) 一分为二，辅助核算后半段 ----------------
  * job(lo, hi, ctx) 必须只依赖自己那一段；par() 返回时两段都已完成（同时充当阶段间的同步点）。 */
@@ -163,16 +192,25 @@ static int button_poll(void)
 #define CHASE_LEAD_TICKS 4     /* vTaskDelay(4) @1kHz = 3~4ms 领先（2 时顶部偶发细花线，加大验证） */
 static void flush_task(void *arg)
 {
+    uint32_t n_frames = 0;
     for (;;) {
         xSemaphoreTake(s_frame_ready, portMAX_DELAY);
         disp_wait_te(20);                              /* 无 TE 时立即返回 */
+        int64_t t0 = esp_timer_get_time();
         disp_flush_panel(0, 0, UI_W, UI_H, s_fb);
         vTaskDelay(CHASE_LEAD_TICKS);
         xSemaphoreGive(s_fb_free);
         disp_wait_inflight(0);                         /* 下一帧至少还要 ~19ms 才画好，这里早就推完了 */
+        int32_t us = esp_timer_get_time() - t0;
+        if (us < s_push_min) s_push_min = us;
+        if (us > s_push_max) s_push_max = us;
         if (disp_panel_lost() || s_force_recover) {     /* 面板欠压复位后自动拉起来 / 手动 */
+            bool forced = s_force_recover;
             s_force_recover = false;
-            disp_panel_recover();
+            disp_panel_recover();                      /* 先恢复画面，再慢慢打黑匣子（48 行串口约 0.3s） */
+            if (!forced) rec_dump();
+        } else if (s_keepalive && ++n_frames % 30 == 0) {
+            disp_keepalive();                          /* 约每秒一次，紧跟在推完之后，不和像素流抢总线 */
         }
     }
 }
@@ -184,7 +222,27 @@ static void console_task(void *arg)
         int ch = getchar();
         if (ch == EOF) { clearerr(stdin); vTaskDelay(pdMS_TO_TICKS(50)); continue; }
         if (ch == 'r') { ESP_LOGW(TAG, "console: force panel re-init"); s_force_recover = true; }
+        if (ch == '+' || ch == '-') {                  /* 亮度 ±32：验证掉线频率是否随亮度变（= 供电问题） */
+            static int b = QD_BRIGHTNESS;
+            b += ch == '+' ? 32 : -32;
+            if (b < 0) b = 0;
+            if (b > 255) b = 255;
+            disp_brightness(b);
+            ESP_LOGW(TAG, "console: brightness %d", b);
+        }
+        if (ch == 'k') { s_keepalive = !s_keepalive; ESP_LOGW(TAG, "console: keepalive %s", s_keepalive ? "on" : "off"); }
     }
+}
+
+/* 帧缓冲平均亮度（每 61 个像素抽 1 个，R+G+B 归一到 0~255）。fb 是大端 RGB565 */
+static int fb_apl(void)
+{
+    uint32_t sum = 0, n = 0;
+    for (int i = 0; i < UI_W * UI_H; i += 61, n++) {
+        uint16_t v = __builtin_bswap16(s_fb[i]);
+        sum += ((v >> 11) << 3) + (((v >> 5) & 63) << 2) + ((v & 31) << 3);
+    }
+    return sum / (n * 3);
 }
 
 /* 帧缓冲里非黑像素占比（每 61 个像素抽 1 个）。黑屏时它 > 0 = 画面在、是面板没亮 */
@@ -239,6 +297,14 @@ static void demo_task(void *arg)
             par(job_rows_il, 0, 2, 1, s_fb);           /* 整帧：两核交错分块，只同步一次 */
             t_rows = esp_timer_get_time() - m;
             t_wait = m - a;
+            frame_rec_t *r = &s_rec[s_rec_i % REC_N];
+            r->t_ms = esp_timer_get_time() / 1000;
+            r->mode = st.mode; r->rev = st.rev; r->on = on; r->done = st.done; r->draining = st.draining;
+            r->demo_cs = st.demo_t * 100;
+            r->apl = fb_apl();
+            r->rpm_pct = fminf(255, fabs(st.rpm) / 9);              /* 相对 900rpm */
+            r->load_pct = fminf(255, st.load * 100);
+            s_rec_i++;
             xSemaphoreGive(s_frame_ready);             /* 交给推屏任务：等 TE 再推 */
         } else {
             for (int i = 0, y = 0; y < UI_H; y += STRIP_H, i++) {
@@ -268,6 +334,24 @@ static void demo_task(void *arg)
                      acc_rows / 1000.f / frames, acc_wait / 1000.f / frames,
                      (unsigned)(te_miss - te_miss_prev), fb_lit_pct(), st.mode, st.calm ? " calm" : "");
             te_miss_prev = te_miss;
+
+            /* 健康行：绿屏/黑屏时对照它判断是主控侧（推送超时、内存、栈）还是面板侧（TE 时序变了） */
+            disp_te_stats_t te;
+            disp_te_stats(&te);
+            ESP_LOGI(TAG, "health up %llds | TE %u per %ld..%ld us hi %ld..%ld us | push %ld..%ld us | "
+                     "flush to %u recov %u | heap %u min %u | stk flush %u r0 %u r1 %u | ka %s",
+                     (long long)(t0 / 1000000), (unsigned)te.edges,
+                     (long)te.per_min, (long)te.per_max, (long)te.hi_min, (long)te.hi_max,
+                     (long)(s_push_min == INT32_MAX ? 0 : s_push_min), (long)s_push_max,
+                     (unsigned)disp_flush_timeouts(), (unsigned)disp_recovers(),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                     s_h_flush ? (unsigned)uxTaskGetStackHighWaterMark(s_h_flush) : 0,
+                     (unsigned)uxTaskGetStackHighWaterMark(s_h_r0),
+                     (unsigned)uxTaskGetStackHighWaterMark(s_h_r1),
+                     s_keepalive ? "on" : "off");
+            s_push_min = INT32_MAX;
+            s_push_max = 0;
             memset(s_prof, 0, sizeof s_prof);
             frames = 0;
             acc_begin = acc_rows = acc_wait = 0;
@@ -307,6 +391,11 @@ esp_err_t qd_app_start(void)
         }
     }
     disp_brightness(QD_BRIGHTNESS);
+    /* 上次是怎么重启的：BROWNOUT = 主控 3.3V 跌落，TASK_WDT/INT_WDT/PANIC = 软件问题 */
+    static const char *rr[] = { "UNKNOWN", "POWERON", "EXT", "SW", "PANIC", "INT_WDT", "TASK_WDT",
+                                "WDT", "DEEPSLEEP", "BROWNOUT", "SDIO", "USB", "JTAG", "EFUSE", "PWR_GLITCH", "CPU_LOCKUP" };
+    esp_reset_reason_t r = esp_reset_reason();
+    ESP_LOGW(TAG, "reset reason: %s (%d)", r < sizeof rr / sizeof rr[0] ? rr[r] : "?", r);
 
     s_go = xSemaphoreCreateBinary();
     s_fin = xSemaphoreCreateBinary();
@@ -314,11 +403,11 @@ esp_err_t qd_app_start(void)
         s_frame_ready = xSemaphoreCreateBinary();
         s_fb_free = xSemaphoreCreateBinary();
         xSemaphoreGive(s_fb_free);                     /* 开始时缓冲空闲 */
-        xTaskCreatePinnedToCore(flush_task, "qd_flush", 3072, NULL, 7, NULL, 1);
+        xTaskCreatePinnedToCore(flush_task, "qd_flush", 3072, NULL, 7, &s_h_flush, 1);
         xTaskCreatePinnedToCore(console_task, "qd_con", 3072, NULL, 2, NULL, 0);
     }
-    xTaskCreatePinnedToCore(helper_task, "qd_r1", 6144, NULL, 6, NULL, 0);
-    xTaskCreatePinnedToCore(demo_task, "qd_r0", 8192, NULL, 6, NULL, 1);
+    xTaskCreatePinnedToCore(helper_task, "qd_r1", 6144, NULL, 6, &s_h_r1, 0);
+    xTaskCreatePinnedToCore(demo_task, "qd_r0", 8192, NULL, 6, &s_h_r0, 1);
     ESP_LOGI(TAG, "QuantDriver UI v1.4.5 %dx%d, %s", UI_W, UI_H, s_fb ? "full-frame" : "strip");
     return ESP_OK;
 }

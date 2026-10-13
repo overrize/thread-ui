@@ -23,6 +23,7 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_heap_caps.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -80,6 +81,21 @@ static bool s_te_ok;              /* 开机自检测到 TE 脉冲才启用同步
 static uint32_t s_te_miss_total;  /* 累计等不到 TE 的次数 */
 static int s_te_miss_run;         /* 连续等不到 TE 的次数：面板掉电复位后 TE 会停 */
 static uint8_t s_bright = 0xFF;   /* 最近一次设置的亮度，面板恢复时重设 */
+static uint32_t s_flush_timeouts, s_recovers;
+
+/* TE 时序统计（ISR 写，日志任务读后清零）。面板内部复位 / 寄存器被改乱时周期或消隐宽度会变 */
+static volatile int64_t s_te_rise_at, s_te_fall_at;
+static volatile uint32_t s_te_edges;
+static volatile int32_t s_te_per_min = INT32_MAX, s_te_per_max, s_te_hi_min = INT32_MAX, s_te_hi_max;
+
+/* TE 脉宽（消隐期长度）基线：开机后前 16 个脉冲取平均，之后固定。
+ * 实测面板在 VBAT 偏低时偶尔会在消隐期 +210us 处自己出错：要么整片复位（TE 停 → 黑屏），
+ * 要么时序寄存器被改乱、TE 宽度从 ~560us 变成 ~1120us 且不自愈（画面异常/绿屏）。
+ * 后者 TE 照常来，只能靠脉宽发现 */
+#define TE_HI_LEARN   16
+#define TE_HI_BAD_RUN  5
+static volatile int32_t s_hi_base, s_hi_learn_sum, s_hi_learn_n;
+static volatile int s_hi_bad_run;
 
 static bool on_trans_done(esp_lcd_panel_io_handle_t io,
                           esp_lcd_panel_io_event_data_t *e, void *ctx)
@@ -95,15 +111,23 @@ static void wr(uint8_t cmd, const void *p, size_t n)
     esp_lcd_panel_io_tx_param(s_io, QSPI_CMD(cmd), p, n);
 }
 
-/* GRAM 原始坐标设窗口 + 推像素（异步 DMA） */
+/* 当前窗口缓存：整屏推送每帧窗口都一样，只在变化时重发 CASET/RASET（-1 = 未知，复位后必须重发） */
+static int s_win[4] = { -1, -1, -1, -1 };
+
+/* GRAM 原始坐标设窗口 + 推像素（异步 DMA）。2C 每次都会把写指针拉回窗口起点 */
 static void gram_blit(int x0, int y0, int w, int h, const uint16_t *px)
 {
     int x1 = x0 + w - 1, y1 = y0 + h - 1;
-    uint8_t ca[4] = { x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF };
-    uint8_t ra[4] = { y0 >> 8, y0 & 0xFF, y1 >> 8, y1 & 0xFF };
-
-    wr(0x2A, ca, 4);                                          /* CASET */
-    wr(0x2B, ra, 4);                                          /* RASET */
+    if (x0 != s_win[0] || x1 != s_win[1]) {
+        uint8_t ca[4] = { x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF };
+        wr(0x2A, ca, 4);                                      /* CASET */
+        s_win[0] = x0; s_win[1] = x1;
+    }
+    if (y0 != s_win[2] || y1 != s_win[3]) {
+        uint8_t ra[4] = { y0 >> 8, y0 & 0xFF, y1 >> 8, y1 & 0xFF };
+        wr(0x2B, ra, 4);                                      /* RASET */
+        s_win[2] = y0; s_win[3] = y1;
+    }
     esp_lcd_panel_io_tx_color(s_io, QSPI_PIXEL, px, w * h * 2);
 }
 
@@ -206,9 +230,46 @@ static void calib_offset_loop(void)
 
 static void IRAM_ATTR on_te(void *arg)
 {
+    int64_t now = esp_timer_get_time();
+    if (!gpio_get_level(PIN_TE)) {             /* 下降沿：消隐结束 */
+        if (s_te_rise_at) {
+            int32_t hi = now - s_te_rise_at;
+            if (hi < s_te_hi_min) s_te_hi_min = hi;
+            if (hi > s_te_hi_max) s_te_hi_max = hi;
+            if (!s_hi_base) {
+                s_hi_learn_sum += hi;
+                if (++s_hi_learn_n == TE_HI_LEARN) s_hi_base = s_hi_learn_sum / TE_HI_LEARN;
+            } else if (hi > s_hi_base + s_hi_base / 4 || hi < s_hi_base - s_hi_base / 4) {
+                s_hi_bad_run++;
+            } else {
+                s_hi_bad_run = 0;
+            }
+        }
+        s_te_fall_at = now;
+        return;
+    }
+    if (s_te_rise_at) {
+        int32_t per = now - s_te_rise_at;
+        if (per < s_te_per_min) s_te_per_min = per;
+        if (per > s_te_per_max) s_te_per_max = per;
+    }
+    s_te_rise_at = now;
+    s_te_edges++;
     BaseType_t hp = pdFALSE;
     xSemaphoreGiveFromISR(s_te, &hp);
     if (hp) portYIELD_FROM_ISR();
+}
+
+void disp_te_stats(disp_te_stats_t *o)
+{
+    o->edges = s_te_edges;
+    o->per_min = s_te_per_min == INT32_MAX ? 0 : s_te_per_min;
+    o->per_max = s_te_per_max;
+    o->hi_min = s_te_hi_min == INT32_MAX ? 0 : s_te_hi_min;
+    o->hi_max = s_te_hi_max;
+    s_te_edges = 0;
+    s_te_per_min = s_te_hi_min = INT32_MAX;
+    s_te_per_max = s_te_hi_max = 0;
 }
 
 /* TE 自检：0x35 打开后 TE 每帧一个脉冲（60Hz）。轮询 200ms 数上升沿，
@@ -234,7 +295,7 @@ static void te_selftest(void)
     if (edges >= 8 && edges <= 20) {
         ESP_LOGI(TAG, "TE ok: %d edges / 200ms on GPIO%d, vsync on", edges, PIN_TE);
         s_te = xSemaphoreCreateBinary();
-        gpio_set_intr_type(PIN_TE, GPIO_INTR_POSEDGE);
+        gpio_set_intr_type(PIN_TE, GPIO_INTR_ANYEDGE);   /* 双沿：顺便量消隐宽度 */
         esp_err_t err = gpio_install_isr_service(0);
         if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) {   /* 别的模块已装过也行 */
             gpio_isr_handler_add(PIN_TE, on_te, NULL);
@@ -246,15 +307,21 @@ static void te_selftest(void)
     }
 }
 
-/* 硬件复位：低 ≥10ms，拉高后等 120ms */
+/* 硬件复位：手册只要求低 ≥10us。拉低 150ms 是给模组上的升压 PMIC 放电：
+ * RESX 低 → CO5300 关 OLED_EN/SWIRE，升压欠压锁死要等输出放干净才解除，太短复位后仍黑屏 */
 static void panel_hw_reset(void)
 {
-    gpio_config_t rst = { .pin_bit_mask = 1ULL << PIN_RST, .mode = GPIO_MODE_OUTPUT };
-    gpio_config(&rst);
+    s_win[0] = s_win[1] = s_win[2] = s_win[3] = -1;     /* 复位后窗口回默认值，缓存作废 */
+    static bool cfg;                         /* 只配一次：重复 gpio_config 会报 conflict */
+    if (!cfg) {
+        gpio_config_t rst = { .pin_bit_mask = 1ULL << PIN_RST, .mode = GPIO_MODE_OUTPUT };
+        gpio_config(&rst);
+        cfg = true;
+    }
     gpio_set_level(PIN_RST, 1);
     vTaskDelay(pdMS_TO_TICKS(10));
     gpio_set_level(PIN_RST, 0);
-    vTaskDelay(pdMS_TO_TICKS(20));
+    vTaskDelay(pdMS_TO_TICKS(150));
     gpio_set_level(PIN_RST, 1);
     vTaskDelay(pdMS_TO_TICKS(120));
 }
@@ -390,13 +457,19 @@ bool disp_wait_te(int timeout_ms)
 
 uint32_t disp_te_misses(void) { return s_te_miss_total; }
 
-/* 连续 10 帧没有 TE：面板多半掉电复位了（复位后睡眠 + 关显示 + TE 关，屏全黑，主控不知道） */
-bool disp_panel_lost(void) { return s_te_ok && s_te_miss_run >= 10; }
+/* 面板异常：连续 10 帧没有 TE（整片复位：睡眠 + 关显示 + TE 关，屏全黑），
+ * 或连续 5 帧 TE 脉宽偏离基线 25% 以上（时序寄存器被改乱，画面异常但 TE 还在） */
+bool disp_panel_lost(void)
+{
+    return s_te_ok && (s_te_miss_run >= 10 || s_hi_bad_run >= TE_HI_BAD_RUN);
+}
 
 /* 面板掉线后重新走一遍复位 + 初始化 + 开显示。调用方保证此时没有在途的整屏推送 */
 void disp_panel_recover(void)
 {
-    ESP_LOGW(TAG, "panel lost (no TE for %d frames), re-init", s_te_miss_run);
+    s_recovers++;
+    ESP_LOGW(TAG, "panel re-init #%u (TE miss run %d, TE width bad run %d, base %ld us)",
+             (unsigned)s_recovers, s_te_miss_run, s_hi_bad_run, (long)s_hi_base);
     panel_hw_reset();
     panel_cmd_init();
     static const uint16_t black[1] = { 0 };
@@ -407,6 +480,7 @@ void disp_panel_recover(void)
     xQueueReset(s_cnt);
     s_inflight = 0;
     s_te_miss_run = 0;
+    s_hi_bad_run = 0;
 }
 
 /* 等到在途传输数 ≤ n（0 = 全部传完）。两块条带缓冲轮转时传 1 */
@@ -416,7 +490,8 @@ void disp_wait_inflight(int n)
         if (xSemaphoreTake(s_cnt, pdMS_TO_TICKS(200)) == pdTRUE) {
             s_inflight--;
         } else {
-            ESP_LOGW(TAG, "flush timeout (inflight=%d)", s_inflight);
+            s_flush_timeouts++;
+            ESP_LOGW(TAG, "flush timeout #%u (inflight=%d)", (unsigned)s_flush_timeouts, s_inflight);
             s_inflight = n;
         }
     }
@@ -426,4 +501,23 @@ void disp_wait_inflight(int n)
 void *disp_alloc(size_t bytes)
 {
     return heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+}
+
+uint32_t disp_flush_timeouts(void) { return s_flush_timeouts; }
+uint32_t disp_recovers(void) { return s_recovers; }
+
+/* 寄存器保活：把初始化设过的关键状态再写一遍。
+ * 杜邦线 40MHz 下一个毛刺就可能把像素帧头错当命令，随机改掉某个寄存器（最坏是 FE 切到厂商页，
+ * 之后所有命令都写错地方 → 偏色/绿屏且不自愈）。读不回寄存器，只能定期重写。
+ * 不发 0x11（Sleep Out 要等 120ms），只写不需要等待的。 */
+void disp_keepalive(void)
+{
+    wr(0xFE, (uint8_t[]){ 0x00 }, 1);
+    wr(0xC4, (uint8_t[]){ 0x80 }, 1);
+    wr(0x3A, (uint8_t[]){ 0x55 }, 1);
+    wr(0x36, (uint8_t[]){ 0x00 }, 1);
+    wr(0x35, (uint8_t[]){ 0x00 }, 1);
+    wr(0x53, (uint8_t[]){ 0x20 }, 1);
+    wr(0x51, &s_bright, 1);
+    wr(0x29, NULL, 0);
 }
